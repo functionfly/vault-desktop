@@ -1,0 +1,58 @@
+# FunctionFly Vault — Tauri v2 capability manifest (least privilege).
+#
+# Posture mirrors studio-desktop/src-tauri/capabilities/default.toml:6-50:
+#
+#   * No filesystem scope for the webview — secret material is read/written
+#     entirely through the OS keychain and the local SQLite cache that the
+#     Rust core owns.
+#   * No http:* scope for the webview — every request is issued from the
+#     Rust core with the bearer attached server-side, so XSS in the React
+#     bundle cannot exfiltrate the access token.
+#   * No shell:allow-execute / shell:allow-spawn — vault never shells out.
+#   * No clipboard:* — copy-to-clipboard is gated by an explicit reveal action
+#     on the Rust side; the webview itself does not need a clipboard scope.
+#
+# SECURITY REVIEW PENDING (security-specialist): do NOT widen this manifest
+# without a STRIDE review of the IPC surface.
+
+"$schema" = "../gen/schemas/desktop-schema.json"
+
+identifier = "default"
+description = "Least-privilege capabilities for the FunctionFly Vault main window"
+windows = ["main"]
+
+permissions = [
+  "core:default",
+  "core:window:allow-set-title",
+  # Read-only OS theme query + the theme-change event, used by
+  # src/lib/theme.ts to drive `dark:` variants. Deliberately NOT
+  # `allow-set-theme`: the vault never overrides the user's desktop theme,
+  # it only follows it. A manual in-app override (if ever added) would need
+  # security sign-off before this is widened.
+  "core:window:allow-theme",
+  "core:event:default",
+  "dialog:default",
+  "os:default",
+  "process:default",
+  # `tauri-plugin-updater` — allows the Rust core to read its
+  # configuration and download/stage updates. The plugin never opens
+  # external URLs from the webview; `check`/`download_and_install` run
+  # inside the Rust core, so the bearer session is never exposed to
+  # JavaScript. Adding this permission does not widen the webview's
+  # attack surface — it just enables the typed IPC commands
+  # `vault_check_update` + `vault_apply_update` we expose via
+  # `src/commands/updater.rs`.
+  "updater:default",
+  # NOTE: `shell:allow-open` is intentionally NOT enabled. Vault has no
+  # reason to open external URLs from the webview; if marketing needs
+  # "open docs" or "open account page" later, add the tauri-plugin-shell
+  # crate to Cargo.toml first, then the permission here.
+]
+
+# Deliberately ABSENT (deny-by-default; add only with security sign-off):
+#   fs:*                      — jail is unnecessary; vault touches no local files
+#   shell:allow-execute       — never
+#   shell:allow-spawn         — never
+#   http:*                    — all HTTP is in the Rust core
+#   global-shortcut:*         — unused
+#   clipboard:*               — explicit reveal action in Rust

@@ -1,0 +1,6 @@
+# Build artefacts
+target/
+gen/
+
+# Test fixtures
+*.rdb

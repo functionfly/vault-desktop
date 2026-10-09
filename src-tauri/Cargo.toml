@@ -1,0 +1,87 @@
+[package]
+name = "functionfly-vault-desktop"
+version = "0.1.0"
+description = "Cross-platform zero-knowledge vault client for FunctionFly"
+edition = "2021"
+rust-version = "1.80"
+default-run = "functionfly-vault-desktop"
+
+[build-dependencies]
+tauri-build = { version = "2.6.3", features = [] }
+
+[dependencies]
+# Tauri v2 — pinned to the same minor as studio-desktop so the two apps
+# stay on the same plugin API surface.
+tauri = { version = "2.11.5", features = [] }
+tauri-plugin-dialog = "2.7.3"
+tauri-plugin-os = "2.3.2"
+tauri-plugin-process = "2.3.1"
+# Signed auto-updater. Mirrors studio-desktop/src-tauri/Cargo.toml:21
+# (Phase 5, plan `.kilo/plans/1787430451513-studio-tauri-rust-migration.md`
+# §5). The plugin is wired in `lib.rs`; the per-channel endpoint + Ed25519
+# pubkey are read at runtime from the process env via
+# `src/updater.rs::UpdaterConfig::from_env`. When `VAULT_UPDATER_PUBKEY`
+# is missing, every `vault_check_update` / `vault_apply_update` returns
+# `missing_pubkey` and the app refuses to trust an unsigned bundle.
+tauri-plugin-updater = "2.11.0"
+
+# Async + HTTP. The HTTP client is rustls-only (no OpenSSL) to match
+# studio-desktop and to keep the audit surface small.
+tokio = { version = "1.53.1", features = ["rt-multi-thread", "macros", "sync", "time", "fs", "io-util"] }
+reqwest = { version = "0.13.4", default-features = false, features = ["json", "rustls"] }
+
+# Serialisation. Pinned to the same patch as studio-desktop.
+serde = { version = "1.0.229", features = ["derive"] }
+serde_json = "1.0.151"
+thiserror = "2"
+
+# Crypto. pbkdf2, aes-gcm, sha2 are exactly the primitives the dashboard's
+# `vault-crypto.ts` uses; matching these libraries guarantees interop.
+pbkdf2 = "0.13.0"
+sha2 = "0.11.0"
+aes-gcm = "0.11.1"
+getrandom = "0.4.3"
+base64 = "0.23.1"
+zeroize = "1.8.2"
+
+# Keychain. All three native backends are required to cover macOS,
+# Windows, and Linux desktop users.
+keyring = { version = "4.2.0", features = [
+  "apple-native-keyring-store",
+  "windows-native-keyring-store",
+  "dbus-secret-service-keyring-store",
+] }
+
+# URL parser used by `src/commands/updater.rs` to validate the
+# per-channel manifest endpoint before handing it to
+# `tauri-plugin-updater`. `url` 2.x is the de-facto crate for this
+# (also pulled in transitively by `reqwest`, but we need it as a
+# direct dep because we parse the endpoint ourselves in
+# `build_updater` to fail closed on bad input).
+url = "2"
+
+tracing = "0.1.44"
+tracing-subscriber = { version = "0.3.23", features = ["env-filter"] }
+
+[lib]
+name = "functionfly_vault_desktop_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[[bin]]
+name = "functionfly-vault-desktop"
+path = "src/main.rs"
+
+[profile.release]
+codegen-units = 1
+lto = true
+strip = true
+
+[dev-dependencies]
+tempfile = "3"
+# `mockito` matches the URL + method + path + headers + body and replies with a
+# canned status/JSON; that is exactly what we need to exercise the CSRF
+# retry path, captcha-fail 503, and rate-limit envelopes without a real
+# orchestrator. Pinned to a pre-1.0 line to stay on the same major as the
+# `orchestrator-api` test suite.
+mockito = "1.7.2"
+serde_json = "1.0.151"

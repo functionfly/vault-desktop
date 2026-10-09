@@ -1,0 +1,44 @@
+# Build artefacts
+node_modules/
+dist/
+target/
+*.tsbuildinfo
+bun.lockb
+Cargo.lock.bak
+.installed-deps
+
+# Tauri runtime artefacts (e.g. cached `tauri info` lookups)
+.tauri/
+
+# Generated icons (regenerate via `python3.12 scripts/generate-icons.py`)
+src-tauri/icons/.cache/
+
+# Editor / OS noise
+.DS_Store
+.idea/
+.vscode/
+*.swp
+*.swo
+Thumbs.db
+
+# Local env / secrets — never commit these
+.env
+.env.local
+*.token
+*.key
+*.log
+logs/
+
+# Generated evidence / smoke run logs
+artifacts/
+/tmp/
+captures/
+
+# Coverage / test outputs
+coverage/
+**/coverage/
+*.lcov
+Cargo.target.parallel-incremental
+
+# macOS junk
+*.dmg.tmp
