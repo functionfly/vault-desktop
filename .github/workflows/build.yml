@@ -86,10 +86,15 @@ jobs:
         working-directory: src-tauri
         run: cargo tauri build
         env:
-          # Skip bundling on CI to keep the matrix runtime reasonable; the
-          # cargo tauri build call still exercises the full code path
-          # without producing installers.
-          TAURI_SKIP_BUNDLE: "true"
+          # Skip bundling on CI to keep the matrix runtime reasonable: packaging
+          # downloads linuxdeploy/AppRun, and `createUpdaterArtifacts` demands the
+          # operator's Ed25519 signing key, which must never live in CI.
+          #
+          # The previous `TAURI_SKIP_BUNDLE: "true"` was not a real Tauri variable
+          # and silently did nothing -- the first live CI run bundled .deb/.rpm/
+          # .AppImage on ubuntu, then failed on the missing signing key. Tauri's
+          # documented override is the TAURI_CONFIG JSON blob below.
+          TAURI_CONFIG: '{"bundle":{"active":false}}'
       - name: Upload artefacts
         uses: actions/upload-artifact@v4
         with:
