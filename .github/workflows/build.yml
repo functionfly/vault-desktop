@@ -70,6 +70,10 @@ jobs:
         # exercised manually against a real orchestrator before merge.
         # CI only verifies that the shell parses cleanly and uploads it
         # as a build artifact so reviewers can run it as-is.
+        #
+        # `shell: bash` is required: windows-latest defaults to PowerShell,
+        # which cannot run `bash -n` at all.
+        shell: bash
         run: |
           bash -n scripts/staging-smoke.sh
           shellcheck scripts/staging-smoke.sh || true   # best-effort
@@ -86,15 +90,16 @@ jobs:
         working-directory: src-tauri
         run: cargo tauri build
         env:
-          # Skip bundling on CI to keep the matrix runtime reasonable: packaging
-          # downloads linuxdeploy/AppRun, and `createUpdaterArtifacts` demands the
-          # operator's Ed25519 signing key, which must never live in CI.
+          # Skip packaging on CI to keep the matrix runtime reasonable.
           #
-          # The previous `TAURI_SKIP_BUNDLE: "true"` was not a real Tauri variable
-          # and silently did nothing -- the first live CI run bundled .deb/.rpm/
-          # .AppImage on ubuntu, then failed on the missing signing key. Tauri's
-          # documented override is the TAURI_CONFIG JSON blob below.
-          TAURI_CONFIG: '{"bundle":{"active":false}}'
+          # `createUpdaterArtifacts` is enforced independently of
+          # `bundle.active`, so BOTH must be disabled: leaving either on makes
+          # the build demand TAURI_SIGNING_PRIVATE_KEY and fail with
+          # "A public key has been found, but no private key". The signing key
+          # lives on the operator host and must never enter CI. The documented
+          # override is the TAURI_CONFIG JSON blob below (the earlier
+          # `TAURI_SKIP_BUNDLE` was not a real Tauri variable and did nothing).
+          TAURI_CONFIG: '{"bundle":{"active":false,"createUpdaterArtifacts":false}}'
       - name: Upload artefacts
         uses: actions/upload-artifact@v4
         with:
