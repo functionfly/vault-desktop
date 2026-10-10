@@ -625,56 +625,78 @@ mod tests {
         let _ = s.describe().await;
     }
 
-    /// File-fallback path: even when the OS keychain is unavailable (which is
-    /// the default on headless Linux / WSL without gnome-keyring-daemon),
-    /// the secret store must still round-trip a session through its
-    /// AES-256-GCM file fallback. This is the only storage option on those
-    /// environments, and without it the app boots into a broken state where
-    /// no one can sign in.
+    /// File-fallback round-trip: the AES-256-GCM file store must persist and
+    /// return a session's three fields, and the bytes on disk must be
+    /// ciphertext rather than plaintext.
     ///
-    /// The test deliberately points `XDG_DATA_HOME` at a tempdir so we don't
-    /// pollute the developer's real data dir when the suite runs locally.
-    #[tokio::test]
-    async fn file_fallback_roundtrips_a_session() {
+    /// This exercises `FileFallback` directly rather than going through
+    /// `SecretStore`. `SecretStore` prefers the OS keychain and only falls
+    /// back when the keychain is unavailable, and whether a keychain exists
+    /// is a property of the *host*: macOS and Windows CI runners have working
+    /// keychains, so asserting the fallback was selected made this test fail
+    /// there while passing on headless Linux. The fallback's own contract is
+    /// platform-independent, so test it directly.
+    #[test]
+    fn file_fallback_roundtrips_a_session() {
         let tmp = std::env::temp_dir().join(format!(
-            "vault-desktop-store-test-{}",
+            "vault-desktop-fallback-{}",
             std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
                 .unwrap()
                 .as_nanos()
         ));
-        std::env::set_var("XDG_DATA_HOME", &tmp);
-        let s = SecretStore::new();
+        let fb = FileFallback { base: tmp.clone() };
+        std::fs::create_dir_all(tmp.join("accounts")).unwrap();
 
-        // Save + reload. The keychain call will fail on headless CI; the
-        // file fallback should take over transparently.
-        s.save_session("https://api.example.com/v1", "access-xyz", Some("refresh-abc"))
-            .await
-            .expect("save_session");
-        let backend = s.last_backend().await;
-        assert!(
-            matches!(backend, BackendKind::FileFallback),
-            "expected FileFallback on a keychain-less host, got {backend:?}"
+        // Write the same three fields `SecretStore::save_session` writes.
+        fb.write(KEY_USER_BASE_URL, "https://api.example.com/v1")
+            .expect("write base_url");
+        fb.write(KEY_USER_ACCESS, "access-xyz").expect("write access");
+        fb.write(KEY_USER_REFRESH, "refresh-abc").expect("write refresh");
+
+        // Round-trip.
+        assert_eq!(
+            fb.read(KEY_USER_BASE_URL).expect("read base_url"),
+            "https://api.example.com/v1"
+        );
+        assert_eq!(fb.read(KEY_USER_ACCESS).expect("read access"), "access-xyz");
+        assert_eq!(
+            fb.read(KEY_USER_REFRESH).expect("read refresh"),
+            "refresh-abc"
         );
 
-        let session = s.load_session().await.expect("load_session").expect("present");
-        assert_eq!(session.base_url, "https://api.example.com/v1");
-        assert_eq!(session.access_token, "access-xyz");
-        assert_eq!(session.refresh_token.as_deref(), Some("refresh-abc"));
-        assert!(matches!(session.backend, BackendKind::FileFallback));
+        // The stored blob must be ciphertext, not the plaintext token.
+        let raw = std::fs::read(fb.account_path(KEY_USER_ACCESS).expect("path")).expect("read raw");
+        assert!(
+            raw.len() > IV_LENGTH + 16,
+            "blob should carry a nonce and a GCM tag"
+        );
+        assert!(
+            !raw.windows("access-xyz".len()).any(|w| w == b"access-xyz"),
+            "access token must not appear in plaintext on disk"
+        );
 
-        // Describe should also report the right one.
-        let mat = s.describe().await.expect("describe");
-        assert_eq!(mat.base_url, "https://api.example.com/v1");
-        assert!(mat.has_access_token);
-        assert!(mat.has_refresh_token);
-        assert!(matches!(mat.backend, BackendKind::FileFallback));
+        // A missing entry is NotFound, not an opaque error.
+        assert!(matches!(
+            fb.read("orchestrator-nonexistent"),
+            Err(StoreError::NotFound)
+        ));
 
-        // Clear wipes both backends (no-op on the keychain, real delete on
-        // the file fallback).
-        s.clear_session().await.expect("clear_session");
-        let after = s.load_session().await.expect("load_session");
-        assert!(after.is_none());
+        // Delete removes one field; clear_all wipes the rest.
+        fb.delete(KEY_USER_ACCESS).expect("delete");
+        assert!(matches!(
+            fb.read(KEY_USER_ACCESS),
+            Err(StoreError::NotFound)
+        ));
+        fb.clear_all().expect("clear_all");
+        assert!(matches!(
+            fb.read(KEY_USER_BASE_URL),
+            Err(StoreError::NotFound)
+        ));
+        assert!(matches!(
+            fb.read(KEY_USER_REFRESH),
+            Err(StoreError::NotFound)
+        ));
 
         let _ = std::fs::remove_dir_all(&tmp);
     }

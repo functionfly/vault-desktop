@@ -19,6 +19,12 @@ jobs:
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
 
+      - name: Install tauri-cli
+        # `cargo tauri build` needs the CLI binary; the Rust toolchain alone
+        # does not provide it. Without this the step fails with
+        # "no such command: `tauri`".
+        run: cargo install tauri-cli --version "^2" --locked
+
       - name: Cache Rust deps
         uses: actions/cache@v4
         with:
@@ -84,7 +90,6 @@ jobs:
           # cargo tauri build call still exercises the full code path
           # without producing installers.
           TAURI_SKIP_BUNDLE: "true"
-
       - name: Upload artefacts
         uses: actions/upload-artifact@v4
         with:
