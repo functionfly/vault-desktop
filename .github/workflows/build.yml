@@ -86,20 +86,21 @@ jobs:
             scripts/staging-smoke.sh
           if-no-files-found: ignore
 
-      - name: Build bundle
+      - name: Build
         working-directory: src-tauri
-        run: cargo tauri build
-        env:
-          # Skip packaging on CI to keep the matrix runtime reasonable.
-          #
-          # `createUpdaterArtifacts` is enforced independently of
-          # `bundle.active`, so BOTH must be disabled: leaving either on makes
-          # the build demand TAURI_SIGNING_PRIVATE_KEY and fail with
-          # "A public key has been found, but no private key". The signing key
-          # lives on the operator host and must never enter CI. The documented
-          # override is the TAURI_CONFIG JSON blob below (the earlier
-          # `TAURI_SKIP_BUNDLE` was not a real Tauri variable and did nothing).
-          TAURI_CONFIG: '{"bundle":{"active":false,"createUpdaterArtifacts":false}}'
+        # `--no-bundle` compiles the binary without packaging installers.
+        #
+        # Do NOT try to suppress packaging with TAURI_CONFIG: all three CI
+        # runners received `{"bundle":{"active":false,"createUpdaterArtifacts":false}}`
+        # and still produced 2-3 bundles (.app+.dmg on macOS, .deb+.rpm+.AppImage
+        # on ubuntu, .msi+.nsis on windows) before failing on the missing
+        # TAURI_SIGNING_PRIVATE_KEY. Tauri's JSON config override is not honoured
+        # for these bundle flags in v2; the CLI flag is the supported mechanism.
+        #
+        # The Ed25519 signing key lives on the operator host -- it is required
+        # for a real release build (scripts/release/publish-update.sh) and must
+        # never be provisioned into CI.
+        run: cargo tauri build --no-bundle
       - name: Upload artefacts
         uses: actions/upload-artifact@v4
         with:
