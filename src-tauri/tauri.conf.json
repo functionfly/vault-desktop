@@ -41,12 +41,5 @@
       "icons/icon.ico"
     ],
     "createUpdaterArtifacts": true
-  },
-  "plugins": {
-    "updater": {
-      "_comment": "Signed auto-updater. The Ed25519 pubkey + per-channel endpoint are configured at runtime via env vars: VAULT_UPDATER_PUBKEY (required, fail-closed when missing) + VAULT_UPDATER_{STABLE,BETA}_URL (per-channel endpoint; defaults to https://updates.functionfly.app/vault/{channel}/{{target_version}}/{{current_version}} when unset). See src/updater.rs::UpdaterConfig::from_env for the canonical contract. The pubkey field below is intentionally empty — the Tauri plugin reads it from the runtime builder in commands/updater.rs.",
-      "pubkey": "",
-      "endpoints": []
-    }
   }
 }
