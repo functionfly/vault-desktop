@@ -149,7 +149,11 @@ async fn disabled_deployment_reports_device_auth_disabled() {
         .expect_err("404 must fail");
 
     match err {
-        ApiError::Api { status, ref code, ref message } => {
+        ApiError::Api {
+            status,
+            ref code,
+            ref message,
+        } => {
             assert_eq!(status, 404);
             assert_eq!(code, "device_auth_disabled");
             assert!(

@@ -322,17 +322,14 @@ impl SecretStore {
 }
 
 fn entry(account: &str) -> Result<keyring::Entry, StoreError> {
-    keyring::Entry::new(KEYRING_SERVICE, account)
-        .map_err(|e| StoreError::Keychain(e.to_string()))
+    keyring::Entry::new(KEYRING_SERVICE, account).map_err(|e| StoreError::Keychain(e.to_string()))
 }
 
 fn set_secret(account: &str, value: &str) -> Result<(), StoreError> {
-    entry(account)?
-        .set_password(value)
-        .map_err(|e| match e {
-            keyring::Error::NoEntry => StoreError::NotFound,
-            other => StoreError::Keychain(other.to_string()),
-        })
+    entry(account)?.set_password(value).map_err(|e| match e {
+        keyring::Error::NoEntry => StoreError::NotFound,
+        other => StoreError::Keychain(other.to_string()),
+    })
 }
 
 fn delete_secret(account: &str) -> Result<(), StoreError> {
@@ -401,9 +398,7 @@ struct FileFallback {
 
 impl FileFallback {
     fn open() -> Result<Self, String> {
-        let base = data_dir()?
-            .join("functionfly")
-            .join("vault-desktop");
+        let base = data_dir()?.join("functionfly").join("vault-desktop");
         std::fs::create_dir_all(base.join("accounts"))
             .map_err(|e| format!("create_dir_all({}) failed: {e}", base.display()))?;
         Ok(Self { base })
@@ -421,7 +416,11 @@ impl FileFallback {
     /// to build a path from it is the safe response. (Pinned by
     /// `file_fallback_rejects_traversal_account_names`.)
     fn account_path(&self, account: &str) -> Result<PathBuf, StoreError> {
-        if account.is_empty() || account.contains('/') || account.contains('\\') || account.contains("..") {
+        if account.is_empty()
+            || account.contains('/')
+            || account.contains('\\')
+            || account.contains("..")
+        {
             return Err(StoreError::FileFallback(format!(
                 "refusing to build a path for unsafe account name {account:?}"
             )));
@@ -614,7 +613,10 @@ mod tests {
         let s = SecretStore::new();
         s.lock_passphrase("first").await;
         s.lock_passphrase("second").await;
-        assert_eq!(s.with_passphrase(|p| p.to_string()).await.unwrap(), "second");
+        assert_eq!(
+            s.with_passphrase(|p| p.to_string()).await.unwrap(),
+            "second"
+        );
     }
 
     #[tokio::test]
@@ -651,8 +653,10 @@ mod tests {
         // Write the same three fields `SecretStore::save_session` writes.
         fb.write(KEY_USER_BASE_URL, "https://api.example.com/v1")
             .expect("write base_url");
-        fb.write(KEY_USER_ACCESS, "access-xyz").expect("write access");
-        fb.write(KEY_USER_REFRESH, "refresh-abc").expect("write refresh");
+        fb.write(KEY_USER_ACCESS, "access-xyz")
+            .expect("write access");
+        fb.write(KEY_USER_REFRESH, "refresh-abc")
+            .expect("write refresh");
 
         // Round-trip.
         assert_eq!(
@@ -708,13 +712,7 @@ mod tests {
     fn file_fallback_rejects_path_traversal_account_names() {
         let tmp = std::env::temp_dir().join("vault-desktop-traversal-test");
         let fb = FileFallback { base: tmp };
-        for bad in [
-            "../../etc/passwd",
-            "..",
-            "a/b",
-            "a\\b",
-            "",
-        ] {
+        for bad in ["../../etc/passwd", "..", "a/b", "a\\b", ""] {
             assert!(
                 matches!(fb.account_path(bad), Err(StoreError::FileFallback(_))),
                 "expected {bad:?} to be refused, got {:?}",
@@ -741,11 +739,7 @@ mod tests {
         ));
         let fb = FileFallback { base: tmp.clone() };
         std::fs::create_dir_all(tmp.join("accounts")).unwrap();
-        std::fs::write(
-            tmp.join("machine.key"),
-            [7u8; KEY_LENGTH],
-        )
-        .unwrap();
+        std::fs::write(tmp.join("machine.key"), [7u8; KEY_LENGTH]).unwrap();
 
         fb.write("acct", "super-secret-token").unwrap();
         let path = fb.account_path("acct").unwrap();
@@ -761,4 +755,3 @@ mod tests {
         let _ = std::fs::remove_dir_all(&tmp);
     }
 }
-

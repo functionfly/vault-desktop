@@ -36,7 +36,11 @@ pub enum ApiError {
     #[error("not found")]
     NotFound,
     #[error("{status} {code}: {message}")]
-    Api { status: u16, code: String, message: String },
+    Api {
+        status: u16,
+        code: String,
+        message: String,
+    },
     #[error("could not reach the orchestrator: {0}")]
     Transport(String),
 }
@@ -239,7 +243,10 @@ impl VaultClient {
             // studio-desktop.
             .timeout(Duration::from_secs(30))
             .connect_timeout(Duration::from_secs(10))
-            .user_agent(concat!("FunctionFlyVaultDesktop/", env!("CARGO_PKG_VERSION")))
+            .user_agent(concat!(
+                "FunctionFlyVaultDesktop/",
+                env!("CARGO_PKG_VERSION")
+            ))
             .build()
             .expect("reqwest client construction is infallible with valid defaults");
 
@@ -329,7 +336,8 @@ impl VaultClient {
             .await
             .map_err(|e| ApiError::Transport(format!("decoding login response: {e}")))?;
 
-        self.set_session(parsed.token.clone(), parsed.user.clone()).await;
+        self.set_session(parsed.token.clone(), parsed.user.clone())
+            .await;
         Ok(parsed)
     }
 
@@ -355,7 +363,10 @@ impl VaultClient {
             .map_err(|e| ApiError::Transport(e.to_string()))?;
 
         if !resp.status().is_success() {
-            return Err(classify(resp.status().as_u16(), &resp.text().await.unwrap_or_default()));
+            return Err(classify(
+                resp.status().as_u16(),
+                &resp.text().await.unwrap_or_default(),
+            ));
         }
         let parsed: RefreshResponse = resp
             .json()
@@ -388,7 +399,11 @@ impl VaultClient {
         if !resp.status().is_success() {
             return Ok(false);
         }
-        Ok(resp.json::<Status>().await.map(|s| s.valid).unwrap_or(false))
+        Ok(resp
+            .json::<Status>()
+            .await
+            .map(|s| s.valid)
+            .unwrap_or(false))
     }
 
     /// Probes the orchestrator's unauthenticated `/health` endpoint.
@@ -467,7 +482,10 @@ impl VaultClient {
             .await
             .map_err(|e| ApiError::Transport(e.to_string()))?;
         if !resp.status().is_success() {
-            return Err(classify(resp.status().as_u16(), &resp.text().await.unwrap_or_default()));
+            return Err(classify(
+                resp.status().as_u16(),
+                &resp.text().await.unwrap_or_default(),
+            ));
         }
         let parsed: CsrfResponse = resp
             .json()
@@ -579,7 +597,10 @@ impl VaultClient {
         // only via the header.
         if matches!(
             method,
-            reqwest::Method::POST | reqwest::Method::PUT | reqwest::Method::PATCH | reqwest::Method::DELETE
+            reqwest::Method::POST
+                | reqwest::Method::PUT
+                | reqwest::Method::PATCH
+                | reqwest::Method::DELETE
         ) {
             let csrf = self.csrf_token(false).await?;
             req = req.header("X-CSRF-Token", csrf);
@@ -600,15 +621,16 @@ impl VaultClient {
             // The documented CSRF failure signature; refetch once and retry.
             if text.contains("csrf_token_invalid") {
                 self.csrf_token(true).await?;
-                return Box::pin(self
-                    .request_inner::<T>(method, path, query, body, true))
-                    .await;
+                return Box::pin(self.request_inner::<T>(method, path, query, body, true)).await;
             }
             return Err(classify(403, &text));
         }
 
         if !status.is_success() {
-            return Err(classify(status.as_u16(), &resp.text().await.unwrap_or_default()));
+            return Err(classify(
+                status.as_u16(),
+                &resp.text().await.unwrap_or_default(),
+            ));
         }
 
         // 204 No Content has no body to decode.
@@ -761,9 +783,9 @@ impl VaultClient {
             .unwrap_or_default();
 
         match code.as_str() {
-            "authorization_pending" | "slow_down" => {
-                Err(DevicePollError::KeepWaiting { slow_down: code == "slow_down" })
-            }
+            "authorization_pending" | "slow_down" => Err(DevicePollError::KeepWaiting {
+                slow_down: code == "slow_down",
+            }),
             "expired_token" => Err(DevicePollError::Terminal(
                 "The sign-in request expired. Start again from the app.".into(),
             )),
@@ -872,8 +894,7 @@ fn transport_hint(raw: &str) -> String {
          orchestrator is running."
             .into()
     } else if lower.contains("connection refused") {
-        "Connection refused — nothing is listening on that host and port."
-            .into()
+        "Connection refused — nothing is listening on that host and port.".into()
     } else {
         raw.to_string()
     }
@@ -913,14 +934,22 @@ fn classify(status: u16, body: &str) -> ApiError {
         403 if code.contains("PLAN") || message.contains("plan") => ApiError::PlanDenied,
         403 => ApiError::Api {
             status,
-            code: if code.is_empty() { "forbidden".into() } else { code },
+            code: if code.is_empty() {
+                "forbidden".into()
+            } else {
+                code
+            },
             message,
         },
         404 => ApiError::NotFound,
         429 => ApiError::RateLimited,
         _ => ApiError::Api {
             status,
-            code: if code.is_empty() { "error".into() } else { code },
+            code: if code.is_empty() {
+                "error".into()
+            } else {
+                code
+            },
             message,
         },
     }
@@ -941,7 +970,10 @@ mod tests {
     #[test]
     fn classifies_429_as_rate_limited() {
         assert!(matches!(
-            classify(429, r#"{"error":"Too Many Requests","code":"VAULT_RATE_LIMIT"}"#),
+            classify(
+                429,
+                r#"{"error":"Too Many Requests","code":"VAULT_RATE_LIMIT"}"#
+            ),
             ApiError::RateLimited
         ));
     }
@@ -988,8 +1020,9 @@ mod tests {
     async fn requests_fail_closed_without_a_token() {
         let c = VaultClient::new();
         c.set_base_url("https://api.functionfly.com").await.unwrap();
-        let res: Result<serde_json::Value, _> =
-            c.request(reqwest::Method::GET, "/v1/vault/secrets", &[], None).await;
+        let res: Result<serde_json::Value, _> = c
+            .request(reqwest::Method::GET, "/v1/vault/secrets", &[], None)
+            .await;
         assert!(matches!(res, Err(ApiError::Unauthenticated)));
     }
 }

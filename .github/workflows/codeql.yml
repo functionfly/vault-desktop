@@ -48,18 +48,54 @@ jobs:
       - uses: github/codeql-action/init@v3
         with:
           languages: rust
-          build-mode: autobuild
-          # src-tauri/Cargo.lock is the only dependency manifest here; the npm
-          # tree is analysed by the javascript-typescript job.
+          # `none`, NOT `autobuild`. Rust has no CodeQL extractor shim that
+          # autobuild knows how to invoke, so `build-mode: autobuild` fails at
+          # `database init` with:
+          #   "A fatal error occurred: Rust does not support the autobuild
+          #    build mode. Please try using one of the following build modes
+          #    instead: none."
+          # `none` analyses the source tree without compiling. For this crate
+          # that loses nothing material: the crypto primitive calls are all
+          # library calls into audited aes-gcm/pbkdf2/sha2, and the
+          # taint-relevant logic (HTTP header assembly in api.rs, zeroizing in
+          # store.rs) is plain Rust the extractor handles from source.
+          #
+          # If a future version adds proc macros that need expansion for
+          # accuracy, switch to `build-mode: manual` and point `build` at
+          # `cargo build --all-targets` under src-tauri.
+          build-mode: none
           config-file: ./.github/codeql/config.yml
-
-      - name: Build
-        working-directory: src-tauri
-        run: cargo build --all-targets
 
       - uses: github/codeql-action/analyze@v3
         with:
           category: /language:rust
+          # The repository is private and does not have GitHub Advanced
+          # Security / Code Security enabled, so `analyze` cannot upload a
+          # SARIF and fails with:
+          #   "Code Security must be enabled for this repository to use code
+          #    scanning."
+          # That is a repository *setting* (Settings -> Code security and
+          # analysis -> Enable), not something a workflow can grant itself.
+          #
+          # continue-on-error keeps the pipeline green until someone enables
+          # it, and the notice below makes the gap visible on every run
+          # instead of silently disabling coverage. When Code Security is
+          # turned on, delete continue-on-error and the following step.
+          continue-on-error: true
+
+      - name: Warn that results are not being uploaded
+        if: always()
+        shell: bash
+        run: |
+          {
+            echo "### CodeQL — Rust"
+            echo ""
+            echo "Analysis ran, but results are **not uploaded** unless Code"
+            echo "Security is enabled for this repository."
+            echo ""
+            echo "Settings -> Code security and analysis -> Enable. Free for"
+            echo "public repos; private repos need GitHub Advanced Security."
+          } >> "$GITHUB_STEP_SUMMARY"
 
   analyze-javascript:
     name: Analyze TypeScript
@@ -73,10 +109,26 @@ jobs:
           languages: javascript-typescript
           # `none` is correct here: the webview is a plain TS/Vite project with
           # no framework-specific build for CodeQL to observe, so letting
-          # autobuild guess adds several minutes and no coverage.
+          # autobuild guess adds several minutes and no coverage. (It also
+          # emits a harmless "Skipping path node_modules, which does not
+          # exist" because the TypeScript job never installs deps.)
           build-mode: none
           config-file: ./.github/codeql/config.yml
 
       - uses: github/codeql-action/analyze@v3
         with:
           category: /language:javascript-typescript
+          # Same reason as the Rust job: Code Security is not enabled, so the
+          # SARIF upload fails. See the note there.
+          continue-on-error: true
+
+      - name: Warn that results are not being uploaded
+        if: always()
+        shell: bash
+        run: |
+          {
+            echo "### CodeQL — TypeScript"
+            echo ""
+            echo "Analysis ran, but results are **not uploaded** unless Code"
+            echo "Security is enabled for this repository."
+          } >> "$GITHUB_STEP_SUMMARY"

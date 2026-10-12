@@ -64,12 +64,18 @@ async fn login_round_trip_persists_session() {
         .await;
 
     let c = client(&server).await;
-    let resp = c.login("alice@example.com", "hunter2").await.expect("login");
+    let resp = c
+        .login("alice@example.com", "hunter2")
+        .await
+        .expect("login");
 
     assert_eq!(resp.token, "ACCESS_TOKEN");
     assert_eq!(resp.user.email.as_deref(), Some("alice@example.com"));
     assert!(resp.desktop_capable);
-    assert!(c.is_authenticated().await, "session should be bound after login");
+    assert!(
+        c.is_authenticated().await,
+        "session should be bound after login"
+    );
 
     login.assert_async().await;
 }
@@ -334,7 +340,10 @@ async fn non_loopback_http_url_is_rejected() {
         .await
         .expect_err("non-loopback http:// must be rejected");
     let msg = format!("{err}");
-    assert!(msg.contains("https://"), "rejection must mention https:// — got: {msg}");
+    assert!(
+        msg.contains("https://"),
+        "rejection must mention https:// — got: {msg}"
+    );
 }
 
 #[tokio::test]

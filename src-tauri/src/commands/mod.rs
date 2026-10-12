@@ -13,10 +13,10 @@ use std::sync::Arc;
 use serde::{Deserialize, Serialize};
 use tauri::State;
 
+use crate::api::HealthProbe;
 use crate::api::{urlencode, LoginUser, VaultClient};
 use crate::crypto;
 use crate::error::{AppError, AppErrorKind};
-use crate::api::HealthProbe;
 use crate::store::{BackendKind, SecretStore, StoreError, StoredSession};
 
 /// Shared, `Arc`-wrapped state. `tauri::State<T>` gives every command a
@@ -109,9 +109,7 @@ pub fn looks_like_api_key(credential: &str) -> bool {
 /// every single launch. Those are verified with `validate_api_key`, which is
 /// the endpoint that actually understands them.
 #[tauri::command]
-pub async fn restore_session(
-    state: State<'_, AppState>,
-) -> Result<RestoreResult, AppError> {
+pub async fn restore_session(state: State<'_, AppState>) -> Result<RestoreResult, AppError> {
     let session = match state.store.load_session().await? {
         Some(s) => s,
         None => return Ok(RestoreResult::empty()),
@@ -355,7 +353,8 @@ pub async fn await_device_login(
 /// A single slot is enough: the login screen drives one sign-in at a time and
 /// starting a new one overwrites the old. Overwriting is deliberate — a stale
 /// flow cannot be resumed later by a window that still remembers its code.
-type DeviceFlows = std::sync::Mutex<std::collections::HashMap<String, (String, crate::api::DeviceAuthorization)>>;
+type DeviceFlows =
+    std::sync::Mutex<std::collections::HashMap<String, (String, crate::api::DeviceAuthorization)>>;
 
 /// Flows waiting for human approval, keyed by user_code.
 static DEVICE_FLOWS: std::sync::OnceLock<DeviceFlows> = std::sync::OnceLock::new();
@@ -396,10 +395,7 @@ fn take_device_flow(
 /// Holds the unlock passphrase in memory. The passphrase is never
 /// persisted; it is wiped on lock or window close.
 #[tauri::command]
-pub async fn unlock_vault(
-    state: State<'_, AppState>,
-    passphrase: String,
-) -> Result<(), AppError> {
+pub async fn unlock_vault(state: State<'_, AppState>, passphrase: String) -> Result<(), AppError> {
     if !state.client.is_authenticated().await {
         return Err(AppError::new(
             AppErrorKind::Unauthenticated,
@@ -523,12 +519,7 @@ pub async fn list_secrets(
 
     let resp: serde_json::Value = state
         .client
-        .request(
-            reqwest::Method::GET,
-            "/v1/vault/secrets",
-            &q,
-            None,
-        )
+        .request(reqwest::Method::GET, "/v1/vault/secrets", &q, None)
         .await?;
 
     Ok(ListSecretsResult {
@@ -654,9 +645,7 @@ pub async fn rollback_secret(
 }
 
 #[tauri::command]
-pub async fn list_namespaces(
-    state: State<'_, AppState>,
-) -> Result<serde_json::Value, AppError> {
+pub async fn list_namespaces(state: State<'_, AppState>) -> Result<serde_json::Value, AppError> {
     require_auth(&state).await?;
     state
         .client
@@ -698,7 +687,10 @@ pub async fn create_secret(
 
     let name = input.name.trim();
     if name.is_empty() {
-        return Err(AppError::new(AppErrorKind::InvalidInput, "name is required"));
+        return Err(AppError::new(
+            AppErrorKind::InvalidInput,
+            "name is required",
+        ));
     }
     if input.plaintext.len() > MAX_PLAINTEXT_BYTES {
         return Err(AppError::new(
@@ -818,10 +810,7 @@ pub async fn rotate_secret(
 }
 
 #[tauri::command]
-pub async fn delete_secret(
-    state: State<'_, AppState>,
-    id: String,
-) -> Result<(), AppError> {
+pub async fn delete_secret(state: State<'_, AppState>, id: String) -> Result<(), AppError> {
     require_auth(&state).await?;
     let path = format!("/v1/vault/secrets/{id}");
     state
@@ -846,12 +835,7 @@ pub async fn list_audit(
         let path = format!("/v1/vault/secrets/{s}/audit");
         return state
             .client
-            .request(
-                reqwest::Method::GET,
-                &path,
-                &[],
-                None,
-            )
+            .request(reqwest::Method::GET, &path, &[], None)
             .await
             .map_err(Into::into);
     }
@@ -922,10 +906,7 @@ pub async fn generate_token(
 }
 
 #[tauri::command]
-pub async fn revoke_token(
-    state: State<'_, AppState>,
-    token_id: String,
-) -> Result<(), AppError> {
+pub async fn revoke_token(state: State<'_, AppState>, token_id: String) -> Result<(), AppError> {
     require_auth(&state).await?;
     let path = format!("/v1/vault/tokens/{token_id}");
     state
@@ -979,7 +960,12 @@ pub async fn bulk_delete_secrets(
     });
     state
         .client
-        .request(reqwest::Method::DELETE, "/v1/vault/secrets/bulk-delete", &[], Some(body))
+        .request(
+            reqwest::Method::DELETE,
+            "/v1/vault/secrets/bulk-delete",
+            &[],
+            Some(body),
+        )
         .await
         .map_err(Into::into)
 }
@@ -1002,16 +988,18 @@ pub async fn create_namespace(
     let body = serde_json::json!({ "name": name });
     state
         .client
-        .request(reqwest::Method::POST, "/v1/vault/namespaces", &[], Some(body))
+        .request(
+            reqwest::Method::POST,
+            "/v1/vault/namespaces",
+            &[],
+            Some(body),
+        )
         .await
         .map_err(Into::into)
 }
 
 #[tauri::command]
-pub async fn delete_namespace(
-    state: State<'_, AppState>,
-    id: String,
-) -> Result<(), AppError> {
+pub async fn delete_namespace(state: State<'_, AppState>, id: String) -> Result<(), AppError> {
     require_auth(&state).await?;
     let path = format!("/v1/vault/namespaces/{id}");
     state
@@ -1076,10 +1064,7 @@ pub async fn list_audit_by_actor(
 
 async fn require_auth(state: &State<'_, AppState>) -> Result<(), AppError> {
     if !state.client.is_authenticated().await {
-        return Err(AppError::new(
-            AppErrorKind::Unauthenticated,
-            "log in first",
-        ));
+        return Err(AppError::new(AppErrorKind::Unauthenticated, "log in first"));
     }
     Ok(())
 }
@@ -1141,9 +1126,11 @@ async fn encrypt_field(
         .with_passphrase(|pw| {
             crypto::encrypt(plaintext, pw)
                 .map_err(AppError::from)
-                .and_then(|d| serde_json::to_value(d).map_err(|e| {
-                    AppError::new(AppErrorKind::Unknown, format!("serializing payload: {e}"))
-                }))
+                .and_then(|d| {
+                    serde_json::to_value(d).map_err(|e| {
+                        AppError::new(AppErrorKind::Unknown, format!("serializing payload: {e}"))
+                    })
+                })
         })
         .await;
     let inner = inner?;

@@ -92,6 +92,10 @@ jobs:
 
       - name: cargo fmt --check
         working-directory: src-tauri
+        # This gate is real, not advisory: the tree was rustfmt-clean as of
+        # commit df6b88b. Reformatting the crate was a deliberate one-off
+        # (the initial import had never been formatted), so this only fails
+        # when a genuinely unformatted change is introduced.
         run: cargo fmt --all -- --check
 
       - name: cargo clippy
@@ -221,12 +225,22 @@ jobs:
 
       - name: publish-update.sh self-tests
         # 7-check arg-parsing smoke plus an end-to-end round-trip against the
-        # bundled mock-r2.py. The round-trip is gated on MOCK_R2_STORE +
-        # python3 + aws being on PATH and is inert otherwise.
+        # bundled mock-r2.py.
+        #
+        # No `aws` CLI is installed, and that is deliberate. The script gates
+        # the round-trip on `MOCK_R2_STORE` + `python3` + `aws` all being
+        # present and is inert otherwise, so the arg-parsing checks still run.
+        #
+        # `apt-get install awscli` is NOT usable on the ubuntu-24.04 runner:
+        #   E: Package 'awscli' has no installation candidate
+        # which fails the step with exit 100 before the test script is ever
+        # invoked. If the round-trip is later wanted in CI, install the v2
+        # CLI from awscli.amazonaws.com (not the apt package) and set
+        # MOCK_R2_STORE=./scripts/release/_mock-r2.
         shell: bash
         run: |
           sudo apt-get update
-          sudo apt-get install -y awscli python3
+          sudo apt-get install -y python3
           ./scripts/release/publish-update.test.sh
 
       - name: Upload smoke script
