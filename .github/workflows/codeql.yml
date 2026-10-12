@@ -65,10 +65,14 @@ jobs:
         run: |
           set -uo pipefail
 
-          # 200 -> feature on, 404 -> not provisioned for this repo. Any other
-          # status (rate limit, token scope) is treated as unknown and left
-          # enabled, so a transient API problem never silently disables
-          # scanning.
+          # 200 -> feature on. 403 -> Code Security is not provisioned, which
+          # is what this repo returns:
+          #   Code Security must be enabled for this repository to use code
+          #   scanning. (HTTP 403)
+          # 404 also means not enabled (older API versions).
+          # Anything else (rate limit, token scope) is treated as "unknown"
+          # and left enabled, so a transient API problem never silently
+          # disables scanning.
           code="$(curl -s -o /dev/null -w '%{http_code}' \
             -H "Authorization: Bearer $GH_TOKEN" \
             -H "Accept: application/vnd.github+json" \
@@ -78,9 +82,9 @@ jobs:
             200)
               echo "enabled=true" >> "$GITHUB_OUTPUT"
               ;;
-            404)
+            403|404)
               echo "enabled=false" >> "$GITHUB_OUTPUT"
-              echo "::notice::Code Security is not enabled for $REPO; skipping CodeQL."
+              echo "::notice::Code Security is not enabled for $REPO (HTTP $code); skipping CodeQL."
               ;;
             *)
               echo "enabled=true" >> "$GITHUB_OUTPUT"

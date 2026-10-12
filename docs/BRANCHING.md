@@ -57,12 +57,13 @@ so a docs-only PR produces no release. That is intended.
 Nothing is tagged by hand.
 
 1. Merge your topic PR into `develop`.
-2. Push `develop`. `release-please.yml` evaluates every commit since the last
-   `v*` tag and opens **"chore(release): vX.Y.Z"** into `main`, having bumped:
+2. release-please evaluates every commit since the last `v*` tag. If any of
+   them warrant a SemVer bump it opens **"chore(release): vX.Y.Z"** into
+   `main`, having bumped:
    - `CHANGELOG.md`
-   - `package.json`
-   - `src-tauri/Cargo.toml`
-   - `src-tauri/tauri.conf.json`
+   - `package.json` (`$.version`)
+   - `src-tauri/Cargo.toml` (`$.package.version`)
+   - `src-tauri/tauri.conf.json` (`$.version`)
 3. Review that PR. It is the changelog users will read, so this is where a
    mislabelled `feat` gets caught — a `feat` that ships as a `patch` under-
    reports a breaking change.
@@ -71,6 +72,18 @@ Nothing is tagged by hand.
    Linux/macOS/Windows, and a draft GitHub Release with the CHANGELOG section
    as its notes.
 6. **Review the draft and publish it.** It stays a draft on purpose.
+
+### One-time setup still outstanding
+
+The automated path does not run today. Two blockers, both environmental:
+
+| Blocker | Effect | Fix |
+| --- | --- | --- |
+| Enterprise policy forbids `GITHUB_TOKEN` from creating PRs | release-please cannot open its release PR | Add a `RELEASE_PLEASE_TOKEN` secret (`contents: write`, `pull-requests: write`) |
+| release-please v4 reads its config from the **target** branch | `release-please-config.json` and `.release-please-manifest.json` must exist on `main`, not just `develop`, or the action fails with *"Missing required manifest config"* | Merge both files to `main` once — they are repo config, not unreleased code |
+
+Both are repository/secret operations rather than code changes, which is why
+they are not automated. Until then use the manual procedure below.
 
 ## Hotfixes
 

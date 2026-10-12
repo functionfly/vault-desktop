@@ -36,6 +36,17 @@
 # `.release-please-manifest.json` instead. Do not inline any of those
 # settings back into this workflow; add them to the config file.
 #
+# IMPORTANT: both files are read from the TARGET branch, not from the ref
+# being scanned. With `target-branch: main` that means they must exist on
+# `main`. If they only exist on `develop` the action fails with:
+#
+#   base (functionfly/vault-desktop): Missing required manifest config:
+#   release-please-config.json
+#
+# even though the files are present in the checkout. They are repo config,
+# not unreleased code, so `main` is the right place for them — see the
+# one-time step in docs/BRANCHING.md.
+#
 # Spec: https://github.com/googleapis/release-please
 name: Release Please
 
