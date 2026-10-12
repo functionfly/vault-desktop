@@ -1,0 +1,165 @@
+# Branch flow enforcement.
+#
+# Enforces the two invariants that make release-please work:
+#
+#   1. Nothing lands on `main` except the release PR (or a hotfix).
+#   2. Every PR into `develop` comes from a short-lived topic branch, so
+#      `develop` is always releasable and never accumulates direct commits.
+#
+# Branch protection cannot express all of this — notably "main accepts only
+# these two head patterns" — so it is checked here and surfaced as a review
+# annotation. Pair it with the required status checks in branch protection
+# so the job below actually blocks the merge.
+#
+# See docs/BRANCHING.md for the full model.
+name: Branch Flow
+
+on:
+  pull_request:
+    branches: [main, develop]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pull-requests: write
+
+concurrency:
+  group: branch-flow-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  branch-flow:
+    name: validate branch flow
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Validate head → base pairing
+        shell: bash
+        env:
+          BASE: ${{ github.base_ref }}
+          HEAD: ${{ github.head_ref }}
+          EVENT: ${{ github.event_name }}
+        run: |
+          set -euo pipefail
+
+          # release-please opens its PR from a branch it owns. It is the only
+          # thing allowed to touch `main` besides a hotfix.
+          is_release_pr() { [[ "$HEAD" == release-please--* ]]; }
+          is_hotfix()     { [[ "$HEAD" == hotfix/* ]]; }
+
+          fail() {
+            echo "::error title=Invalid branch target::$1"
+            exit 1
+          }
+
+          if [ "$EVENT" = "workflow_dispatch" ]; then
+            echo "Manual dispatch — nothing to validate."
+            exit 0
+          fi
+
+          if [ -z "$HEAD" ]; then
+            fail "Could not determine the head branch."
+          fi
+
+          case "$BASE" in
+            develop)
+              if is_release_pr || is_hotfix; then
+                echo "::error title=Wrong target::\`$HEAD\` should target \`main\`, not \`develop\`."
+                exit 1
+              fi
+
+              # Topic branches are the only legal source for develop.
+              # Restricting the namespace (rather than allow-listing every
+              # prefix) keeps `develop` free of stray direct pushes.
+              #
+              # `dependabot/*` is allowed deliberately: dependabot.yml pins
+              # every ecosystem to `target-branch: develop`, so its branches
+              # land here. It is still subject to the normal CI gate — the
+              # prefix only controls *where* a PR may point, not whether it
+              # may merge.
+              if [[ "$HEAD" != feature/* ]] \
+                && [[ "$HEAD" != fix/* ]] \
+                && [[ "$HEAD" != chore/* ]] \
+                && [[ "$HEAD" != refactor/* ]] \
+                && [[ "$HEAD" != perf/* ]] \
+                && [[ "$HEAD" != docs/* ]] \
+                && [[ "$HEAD" != test/* ]] \
+                && [[ "$HEAD" != ci/* ]] \
+                && [[ "$HEAD" != build/* ]] \
+                && [[ "$HEAD" != dependabot/* ]]; then
+                echo "::error title=Invalid topic branch::\`$HEAD\` does not match an allowed prefix (feature/, fix/, chore/, refactor/, perf/, docs/, test/, ci/, build/, dependabot/)."
+                exit 1
+              fi
+
+              echo "OK: \`$HEAD\` → \`develop\`."
+              ;;
+
+            main)
+              # A hotfix may be opened straight against main so a production
+              # regression can be fixed without first landing on develop.
+              if is_hotfix; then
+                echo "OK: hotfix \`$HEAD\` → \`main\` (must be back-merged into develop)."
+              elif is_release_pr; then
+                echo "OK: release-please PR \`$HEAD\` → \`main\`."
+              else
+                echo "::error title=Direct commit to main::\`$HEAD\` may not target \`main\`."
+                echo "::error::Only a release-please PR or a hotfix/* branch may merge into \`main\`. Put this work on a topic branch and open a PR into \`develop\`."
+                exit 1
+              fi
+              ;;
+
+            *)
+              echo "Unexpected base branch: $BASE" >&2
+              exit 1
+              ;;
+          esac
+
+      - name: Warn when a hotfix is not back-merged
+        if: github.base_ref == 'main' && startsWith(github.head_ref, 'hotfix/')
+        shell: bash
+        run: |
+          cat >> "$GITHUB_STEP_SUMMARY" <<'EOF'
+          ### Hotfix merged into `main`
+
+          This branch must now be back-merged into `develop`, otherwise the next
+          release will drop the fix:
+
+          ```bash
+          git checkout develop
+          git merge --no-ff hotfix/<name>
+          git push origin develop
+          ```
+          EOF
+
+  # ── Conventional Commits ──────────────────────────────────────────────────
+  # release-please derives the SemVer bump from the commit/PR titles. A
+  # non-conforming title is silently dropped from the changelog and produces a
+  # wrong version bump, so it is checked rather than trusted.
+  commit-lint:
+    name: conventional commit title
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Lint PR title and commits
+        run: |
+          set -euo pipefail
+
+          # PR title first — that is what shows in the squash/merge commit on
+          # a squash-merge repository.
+          TITLE="$(gh pr view "$PR_NUMBER" --json title -q .title)"
+          echo "PR title: $TITLE"
+          if ! printf '%s' "$TITLE" | grep -qE \
+            '^(feat|fix|perf|refactor|revert|docs|build|ci|test|chore)(\(.+\))?!?: .+'; then
+            echo "::error title=Non-conventional PR title::\`$TITLE\` does not match \`type(scope): description\`."
+            echo "::error::Valid types: feat, fix, perf, refactor, revert, docs, build, ci, test, chore."
+            echo "::error::A \`fix\` is a patch, a \`feat\` is a minor, and \`BREAKING CHANGE\` or a trailing \`!\` is a major. Mislabeling here mislabels the release."
+            exit 1
+          fi
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}

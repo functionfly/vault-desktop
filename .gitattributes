@@ -1,0 +1,41 @@
+# Normalise line endings so a Windows checkout cannot commit a CRLF shell
+# script or a CRLF version string.
+#
+# This is not cosmetic here. Two CI jobs parse these files on Linux:
+#   - ci.yml -> release-scripts runs `bash -n scripts/release/*.sh`. A single
+#     CR turns a valid script into a syntax error, or worse, silently changes
+#     a here-doc terminator.
+#   - release.yml -> verify compares the version in Cargo.toml against the
+#     `v*` tag. A trailing CR makes "0.1.0\r" != "0.1.0" and the release
+#     fails closed for no real reason.
+#
+# Until this file existed the repo happened to be clean only because every
+# contributor had `core.autocrlf=input` (or `true`) configured locally. That
+# is not a property of the repository, it is a property of the machines.
+* text=auto eol=lf
+
+# Binaries — never line-ending translated.
+*.png   binary
+*.ico   binary
+*.icns  binary
+*.exe   binary
+*.msi   binary
+*.dmg   binary
+*.AppImage binary
+*.sig   binary
+
+# Signature files are opaque bytes, not text.
+*.sig binary
+
+# Test fixtures for the mock R2 bucket are tarballs.
+*.tar.gz binary
+
+# Lockfiles: never normalize. A rewritten lockfile produces a diff that
+# defeats `bun install --frozen-lockfile` and makes Cargo re-resolve.
+bun.lock     -text
+Cargo.lock   -text
+
+# Windows-only scripts, which genuinely need CRLF to execute.
+*.cmd   text eol=crlf
+*.bat   text eol=crlf
+*.ps1   text eol=crlf

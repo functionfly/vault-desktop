@@ -91,6 +91,50 @@ Cross-compilation from one host to another is supported but requires the
 matching linker; the simplest path is a GitHub Actions matrix on three
 runners (see `Deploy / CI`).
 
+## Deploy / CI
+
+> Branching model: [`docs/BRANCHING.md`](docs/BRANCHING.md). `develop` takes
+> day-to-day work; `main` only ever holds released, tagged code.
+
+`.github/workflows/`:
+
+| Workflow | Trigger | What it does |
+| --- | --- | --- |
+| [`ci.yml`](.github/workflows/ci.yml) | push/PR to `main` or `develop` | `tsc` + vitest + vite build, `cargo fmt`/`clippy`/`test`, then a 3-OS compile matrix, plus `bash -n` + self-tests over `scripts/release/`. |
+| [`release-please.yml`](.github/workflows/release-please.yml) | push to `develop` | Conventional Commits → SemVer bump → opens the `chore(release): vX.Y.Z` PR into `main`, updating the CHANGELOG and all three version files. |
+| [`release.yml`](.github/workflows/release.yml) | `v*` tag | Verifies the tag against every version source, builds + signs installers on 3 OSes, creates a **draft** GitHub Release, and optionally publishes the updater manifest to R2. |
+| [`branch-flow.yml`](.github/workflows/branch-flow.yml) | PR to `main`/`develop` | Rejects invalid head→base pairings and non-Conventional-Commit titles. |
+| [`codeql.yml`](.github/workflows/codeql.yml) | push/PR + weekly | Static analysis for Rust and TypeScript. |
+| [`dependency-review.yml`](.github/workflows/dependency-review.yml) | PR | Vulnerable-dependency diff plus `cargo audit` over `src-tauri/Cargo.lock`. |
+
+Nothing is tagged by hand — merge the release PR and release-please tags it.
+
+### Secrets the release needs
+
+`release.yml` is the only workflow that ever sees the updater signing key.
+
+| Secret | Required | Purpose |
+| --- | --- | --- |
+| `TAURI_SIGNING_PRIVATE_KEY` | **yes** | Ed25519 updater signing. Absent → the release fails closed rather than shipping an unsigned artefact the updater would reject anyway. |
+| `TAURI_SIGNING_PRIVATE_KEY_PASSWORD` | **yes** | Passphrase for the above. |
+| `R2_ACCOUNT_ID`, `R2_ACCESS_KEY_ID`, `R2_SECRET_ACCESS_KEY`, `R2_BUCKET` | no | Publishes the updater manifest. When unset the installers still publish and the job logs how to run `publish-update.sh` by hand. |
+| `APPLE_*`, `WINDOWS_CERTIFICATE*` | no | Notarisation / code signing. |
+
+### Local checks that mirror CI
+
+```bash
+bun install --frozen-lockfile
+bunx tsc --noEmit && bunx vitest run && bunx vite build
+
+cd src-tauri
+cargo fmt --all -- --check
+cargo clippy --all-targets
+cargo test --lib
+cargo test --test orchestrator_mock
+cargo test --test device_flow
+cargo tauri build --no-bundle   # packaging suppressed; see ci.yml for why
+```
+
 ## Crypto interop guarantee
 
 The Rust core's `crypto::encrypt` / `crypto::decrypt` produce values the

@@ -1,0 +1,52 @@
+# Code owners for vault-desktop.
+#
+# A PR touching any path below requests review from the listed team. Approval
+# is required to merge into `main` or `develop` (see docs/BRANCHING.md and the
+# branch protection setup in the release checklist).
+#
+# Team slugs assume the teams exist in the FunctionFly GitHub org. Replace
+# the placeholders before enforcement is turned on:
+#   @functionfly/platform
+#   @functionfly/security
+#
+# Default owners for anything not matched below.
+*                                       @functionfly/platform
+
+# ── Security-sensitive surfaces ─────────────────────────────────────────────
+# The Rust core owns the crypto primitives, the keychain, and the HTTP client
+# that attaches the bearer token. A change here alters the trust boundary
+# between the vault and the orchestrator.
+/src-tauri/src/crypto.rs                 @functionfly/security @functionfly/platform
+/src-tauri/src/store.rs                  @functionfly/security @functionfly/platform
+/src-tauri/src/api.rs                    @functionfly/security @functionfly/platform
+/src-tauri/src/updater.rs                @functionfly/security @functionfly/platform
+/src-tauri/src/commands/                 @functionfly/security @functionfly/platform
+
+# Capability manifest: this file decides what the webview is allowed to do.
+# Widening it is a privilege-escalation change and needs security review.
+/src-tauri/capabilities/                 @functionfly/security
+
+# Wire-format compatibility with the dashboard and the Go SDK. Any edit here
+# can break cross-client secret decryption.
+/src/lib/ipc.ts                          @functionfly/platform
+/src/lib/crypto*                         @functionfly/security @functionfly/platform
+
+# ── Release pipeline ────────────────────────────────────────────────────────
+# The signing key, the updater manifest layout, and the release scripts are
+# the supply chain for every shipped binary.
+/scripts/release/                        @functionfly/security @functionfly/platform
+/.github/workflows/                      @functionfly/platform
+/.github/codeql/                         @functionfly/security
+
+# ── Frontend ─────────────────────────────────────────────────────────────────
+/src/screens/                            @functionfly/platform
+/src/App.tsx                             @functionfly/platform
+/src/styles.css                          @functionfly/platform
+
+# ── Release metadata ─────────────────────────────────────────────────────────
+# These four are bumped together by release-please. A PR that touches one of
+# them without the others desynchronises the release.
+/CHANGELOG.md                            @functionfly/platform
+/package.json                            @functionfly/platform
+/src-tauri/Cargo.toml                    @functionfly/platform
+/src-tauri/tauri.conf.json               @functionfly/platform

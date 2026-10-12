@@ -1,0 +1,57 @@
+# Flags vulnerable dependencies introduced on pull requests.
+#
+# NOTE: `actions/dependency-review-action` requires the repository's
+# "Dependency graph" to be enabled in Settings → Security → Code security and
+# analysis, and that cannot be configured from a workflow file. Until that
+# setting is switched on the action exits with:
+#
+#   Dependency review is not supported on this repository. Please ensure that
+#   Dependency graph is enabled along with GitHub Connect for GHES.
+#
+# The step is therefore `continue-on-error` so a repository-settings gap does
+# not block unrelated pull requests. Remove that flag once the dependency graph
+# is enabled — the job will then genuinely gate on `fail-on-severity`.
+name: Dependency Review
+
+on:
+  pull_request:
+    branches: [main, develop]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: dependency-review-${{ github.head_ref || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  dependency-review:
+    name: dependency review
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/dependency-review-action@v4
+        continue-on-error: true
+        with:
+          fail-on-severity: moderate
+
+  # `cargo audit` covers the Rust tree, which the GitHub dependency graph does
+  # not model — the graph only understands package-lock/yarn/pnpm manifests, so
+  # every crate in src-tauri/Cargo.lock would be invisible to the action above.
+  cargo-audit:
+    name: cargo audit
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install cargo-audit
+        uses: rustsec/audit-check@v2
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Audit the Rust dependency tree
+        working-directory: src-tauri
+        run: cargo audit --deny warnings

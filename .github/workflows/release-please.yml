@@ -1,0 +1,104 @@
+# Release Please — changelog and version automation.
+#
+# release-please turns Conventional Commits into a version bump, a CHANGELOG
+# entry, and a "chore(release): vX.Y.Z" pull request. Merging that PR is the
+# ONLY sanctioned way a commit reaches `main` from `develop`, which makes it
+# the single promotion gate for production.
+#
+# Flow:
+#   1. Push to `develop`.
+#   2. release-please scans commits since the last `v*` tag.
+#   3. If any of them warrant a SemVer bump it opens (or updates) the
+#      release PR targeting `main`, bumping:
+#        - CHANGELOG.md
+#        - package.json                       (version)
+#        - src-tauri/Cargo.toml               (version)
+#        - src-tauri/tauri.conf.json          (version)
+#   4. CODEOWNER approves + merges the release PR into `main`.
+#   5. release-please tags the merge commit `vX.Y.Z`, which triggers
+#      release.yml → signed bundles + GitHub Release.
+#
+# Mirrors .github/workflows/release-please.yml in the functionfly monorepo.
+# Spec: https://github.com/googleapis/release-please
+name: Release Please
+
+on:
+  push:
+    # `branches` and `branches-ignore` are mutually exclusive for the same
+    # event in GitHub Actions — using both makes GitHub reject the whole file
+    # (the run fails in 0s with "workflow file issue" and creates no jobs).
+    # Negate the release PR branch inside `branches` instead; `**` is used
+    # because `*` does not match `/`.
+    branches:
+      - develop
+      - "!release-please--**"
+
+permissions:
+  contents: write
+  pull-requests: write
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  # Never cancel: a cancelled half-run would leave the release PR in a state
+  # that only a human can untangle.
+  cancel-in-progress: false
+
+jobs:
+  release-please:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: googleapis/release-please-action@v4
+        id: release
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+          # `simple` because the version lives in three files that are not a
+          # language-specific manifest. `cargo` would only manage Cargo.toml
+          # and leave the Tauri bundle version and the npm package version
+          # stranded on the previous release — and a mismatch there is exactly
+          # the bug class that ships a mislabelled installer.
+          release-type: simple
+          package-name: functionfly-vault-desktop
+
+          # The release PR targets `main`. Everything else in this repo is
+          # either merged into develop (PRs) or created by this action.
+          default-branch: main
+
+          changelog-path: CHANGELOG.md
+
+          # Conventional-Commits type → CHANGELOG section.
+          changelog-sections: >-
+            [{"type":"feat","section":"Features","hidden":false},
+             {"type":"fix","section":"Bug Fixes","hidden":false},
+             {"type":"perf","section":"Performance","hidden":false},
+             {"type":"refactor","section":"Refactoring","hidden":false},
+             {"type":"revert","section":"Reverts","hidden":false},
+             {"type":"docs","section":"Documentation","hidden":false},
+             {"type":"build","section":"Build System","hidden":false},
+             {"type":"ci","section":"Continuous Integration","hidden":false},
+             {"type":"test","section":"Tests","hidden":false},
+             {"type":"chore","section":"Chores","hidden":false}]
+
+          # Every place the version is duplicated. All three must move together
+          # or the shipped binary reports the wrong version to the updater.
+          extra-files: |
+            package.json
+            src-tauri/Cargo.toml
+            src-tauri/tauri.conf.json
+
+      - name: Summarise release state
+        if: always()
+        env:
+          OUT: ${{ steps.release.outputs.tag_name }}
+        run: |
+          {
+            echo "### release-please"
+            echo ""
+            if [ -n "$OUT" ]; then
+              echo "Tagged \`$OUT\` — release.yml will build signed bundles."
+            else
+              echo "No release created this run."
+              echo "If the release PR is open, merge it to cut a release."
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"

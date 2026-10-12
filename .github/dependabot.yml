@@ -1,0 +1,60 @@
+# Dependabot — dependency update PRs for all three manifests in this repo.
+#
+# Weekly, matching the functionfly monorepo cadence. Cargo is listed against
+# `src-tauri` rather than `/` because the only Cargo.toml lives there.
+#
+# Every ecosystem sets `target-branch: develop`. Dependabot defaults to the
+# repository's default branch (`main`), and branch-flow.yml rejects any PR on
+# `main` that is not a release-please or hotfix branch — so without this the
+# bot's PRs would be blocked on arrival. Dependency bumps are ordinary topic
+# work and belong on `develop` like any other change.
+version: 2
+
+updates:
+  # Webview dependencies (React, Vite, Tauri JS API, Tailwind).
+  - package-ecosystem: npm
+    directory: /
+    target-branch: develop
+    schedule:
+      interval: weekly
+      day: monday
+    open-pull-requests-limit: 10
+    labels:
+      - dependencies
+      - javascript
+
+  # Rust core — Tauri, crypto primitives, keyring, reqwest.
+  - package-ecosystem: cargo
+    directory: /src-tauri
+    target-branch: develop
+    schedule:
+      interval: weekly
+      day: monday
+    open-pull-requests-limit: 10
+    labels:
+      - dependencies
+      - rust
+    # `aes-gcm`, `pbkdf2` and `sha2` are byte-compatible with the dashboard's
+    # TypeScript implementation. A minor/patch bump cannot silently change
+    # the wire format; majors are excluded from the automatic PR so they need
+    # a human to re-run the interop tests.
+    ignore:
+      - dependency-name: aes-gcm
+        update-types: [version-update:semver-major]
+      - dependency-name: pbkdf2
+        update-types: [version-update:semver-major]
+      - dependency-name: sha2
+        update-types: [version-update:semver-major]
+      - dependency-name: tauri-plugin-updater
+        update-types: [version-update:semver-major]
+
+  # The workflow actions themselves.
+  - package-ecosystem: github-actions
+    directory: /
+    target-branch: develop
+    schedule:
+      interval: monthly
+    open-pull-requests-limit: 5
+    labels:
+      - dependencies
+      - github-actions

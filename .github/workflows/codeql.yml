@@ -1,0 +1,82 @@
+# CodeQL — static analysis for both languages in the vault.
+#
+# The Rust core holds the crypto primitives and the HTTP client that carries
+# the bearer token, so it is the surface that matters most. The TypeScript
+# layer is the untrusted webview: it parses orchestrator responses and must
+# never be trusted to reach the keychain directly.
+name: CodeQL
+
+on:
+  push:
+    branches: [main, develop]
+  pull_request:
+    branches: [main, develop]
+  schedule:
+    # Weekly, Monday 05:32 UTC. Off the hour to avoid the GitHub Actions
+    # scheduling congestion at :00.
+    - cron: '32 5 * * 1'
+
+permissions:
+  contents: read
+  security-events: write
+  actions: read
+
+concurrency:
+  group: codeql-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  analyze-rust:
+    name: Analyze Rust
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - name: Install Linux Tauri deps
+        # `autobuild` links the crate, which requires the GTK / WebKitGTK /
+        # keyring-dbus system libraries to be present.
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libwebkit2gtk-4.1-dev build-essential libssl-dev \
+            libgtk-3-dev libayatana-appindicator3-dev librsvg2-dev \
+            libsecret-1-dev
+
+      - uses: github/codeql-action/init@v3
+        with:
+          languages: rust
+          build-mode: autobuild
+          # src-tauri/Cargo.lock is the only dependency manifest here; the npm
+          # tree is analysed by the javascript-typescript job.
+          config-file: ./.github/codeql/config.yml
+
+      - name: Build
+        working-directory: src-tauri
+        run: cargo build --all-targets
+
+      - uses: github/codeql-action/analyze@v3
+        with:
+          category: /language:rust
+
+  analyze-javascript:
+    name: Analyze TypeScript
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: github/codeql-action/init@v3
+        with:
+          languages: javascript-typescript
+          # `none` is correct here: the webview is a plain TS/Vite project with
+          # no framework-specific build for CodeQL to observe, so letting
+          # autobuild guess adds several minutes and no coverage.
+          build-mode: none
+          config-file: ./.github/codeql/config.yml
+
+      - uses: github/codeql-action/analyze@v3
+        with:
+          category: /language:javascript-typescript
