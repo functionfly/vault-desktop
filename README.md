@@ -115,10 +115,19 @@ Nothing is tagged by hand — merge the release PR and release-please tags it.
 
 | Secret | Required | Purpose |
 | --- | --- | --- |
+| `RELEASE_PLEASE_TOKEN` | for automated releases | PAT with `contents: write` + `pull-requests: write`. The enterprise policy blocks `GITHUB_TOKEN` from creating PRs, so release-please cannot run without this. |
 | `TAURI_SIGNING_PRIVATE_KEY` | **yes** | Ed25519 updater signing. Absent → the release fails closed rather than shipping an unsigned artefact the updater would reject anyway. |
 | `TAURI_SIGNING_PRIVATE_KEY_PASSWORD` | **yes** | Passphrase for the above. |
 | `R2_ACCOUNT_ID`, `R2_ACCESS_KEY_ID`, `R2_SECRET_ACCESS_KEY`, `R2_BUCKET` | no | Publishes the updater manifest. When unset the installers still publish and the job logs how to run `publish-update.sh` by hand. |
 | `APPLE_*`, `WINDOWS_CERTIFICATE*` | no | Notarisation / code signing. |
+
+### Known gaps
+
+- **CodeQL does not currently run.** Code scanning needs Code Security, which
+  this private repo does not have under the org's enterprise policy. The
+  workflow probes for it and skips with a notice rather than sitting red.
+- **Automated changelog releases are blocked** for the same class of reason —
+  see the manual procedure in [`docs/BRANCHING.md`](docs/BRANCHING.md).
 
 ### Local checks that mirror CI
 

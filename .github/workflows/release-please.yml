@@ -11,24 +11,41 @@
 #   3. If any of them warrant a SemVer bump it opens (or updates) the
 #      release PR targeting `main`, bumping:
 #        - CHANGELOG.md
-#        - package.json                       (version)
-#        - src-tauri/Cargo.toml               (version)
-#        - src-tauri/tauri.conf.json          (version)
+#        - package.json                       ($.version)
+#        - src-tauri/Cargo.toml               ($.package.version)
+#        - src-tauri/tauri.conf.json          ($.version)
+#      All four rules live in `release-please-config.json`.
 #   4. CODEOWNER approves + merges the release PR into `main`.
-#   5. release-please tags the merge commit `vX.Y.Z`, which triggers
-#      release.yml → signed bundles + GitHub Release.
+#   5. release-please tags the merge commit `vX.Y.Z`.
+#   6. The `v*` tag push triggers release.yml -> signed bundles + GitHub
+#      Release.
 #
-# Mirrors .github/workflows/release-please.yml in the functionfly monorepo.
+# NOTE ON v4 CONFIGURATION
+# release-please-action v4 REMOVED the `package-name`, `default-branch`,
+# `changelog-path`, `changelog-sections` and `extra-files` inputs. Passing
+# them produces only a warning —
+#
+#   [warning]Unexpected input(s) 'package-name', 'default-branch',
+#   'changelog-path', 'changelog-sections', 'extra-files', valid inputs are...
+#
+# — and they are then silently ignored. Worse, the multi-line changelog
+# sections scalar survives YAML parsing but fails the action's own parse
+# ("unexpected token ' ' at 1:8"), which fails the step.
+#
+# v4 reads configuration from `release-please-config.json` +
+# `.release-please-manifest.json` instead. Do not inline any of those
+# settings back into this workflow; add them to the config file.
+#
 # Spec: https://github.com/googleapis/release-please
 name: Release Please
 
 on:
   push:
     # `branches` and `branches-ignore` are mutually exclusive for the same
-    # event in GitHub Actions — using both makes GitHub reject the whole file
-    # (the run fails in 0s with "workflow file issue" and creates no jobs).
-    # Negate the release PR branch inside `branches` instead; `**` is used
-    # because `*` does not match `/`.
+    # event in GitHub Actions -- using both makes GitHub reject the whole
+    # file (the run fails in 0s with "workflow file issue" and creates no
+    # jobs). Negate the release PR branch inside `branches` instead; `**` is
+    # used because `*` does not match `/`.
     branches:
       - develop
       - "!release-please--**"
@@ -39,8 +56,8 @@ permissions:
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
-  # Never cancel: a cancelled half-run would leave the release PR in a state
-  # that only a human can untangle.
+  # Never cancel: a cancelled half-run leaves the release PR in a state only
+  # a human can untangle.
   cancel-in-progress: false
 
 jobs:
@@ -48,57 +65,83 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
+      - uses: actions/checkout@v4
+
       - uses: googleapis/release-please-action@v4
         id: release
         with:
-          token: ${{ secrets.GITHUB_TOKEN }}
+          # A PAT, not GITHUB_TOKEN.
+          #
+          # This repository sits under an enterprise policy that forbids the
+          # Actions token from creating pull requests:
+          #
+          #   The enterprise does not allow GitHub Actions to create or
+          #   approve pull requests
+          #
+          # and `PUT /actions/permissions/workflow` refuses both
+          # `default_workflow_permissions: write` and
+          # `can_approve_pull_request_reviews: true` with a 409. Without a
+          # PAT this workflow fails with:
+          #
+          #   GitHub Actions is not permitted to create or approve pull
+          #   requests.
+          #
+          # `release-please-bot@...` is the token to store here. It needs
+          # `contents: write` and `pull-requests: write`, and it bypasses
+          # the enterprise restriction because it is not GITHUB_TOKEN.
+          #
+          # Until that secret exists the step fails loudly by design. Do not
+          # add `continue-on-error` here: a release pipeline that cannot open
+          # its PR is not a release pipeline, and silently succeeding would
+          # mean releases stop being cut with no signal.
+          token: ${{ secrets.RELEASE_PLEASE_TOKEN || secrets.GITHUB_TOKEN }}
 
-          # `simple` because the version lives in three files that are not a
-          # language-specific manifest. `cargo` would only manage Cargo.toml
-          # and leave the Tauri bundle version and the npm package version
-          # stranded on the previous release — and a mismatch there is exactly
-          # the bug class that ships a mislabelled installer.
-          release-type: simple
-          package-name: functionfly-vault-desktop
+          # The v4 config surface. Paths are relative to the repo root.
+          config-file: release-please-config.json
+          manifest-file: .release-please-manifest.json
 
-          # The release PR targets `main`. Everything else in this repo is
-          # either merged into develop (PRs) or created by this action.
-          default-branch: main
+          # The release PR targets `main`; `develop` is only the source of
+          # the commits being evaluated. The trigger above is set to develop.
+          target-branch: main
 
-          changelog-path: CHANGELOG.md
+      - name: Report when the PAT is missing
+        # Distinguishes "no PAT configured" from "PAT present but lacks
+        # scope", which look identical in the action's own error text.
+        if: failure()
+        shell: bash
+        run: |
+          cat >> "$GITHUB_STEP_SUMMARY" <<'EOF'
+          ### release-please could not run
 
-          # Conventional-Commits type → CHANGELOG section.
-          changelog-sections: >-
-            [{"type":"feat","section":"Features","hidden":false},
-             {"type":"fix","section":"Bug Fixes","hidden":false},
-             {"type":"perf","section":"Performance","hidden":false},
-             {"type":"refactor","section":"Refactoring","hidden":false},
-             {"type":"revert","section":"Reverts","hidden":false},
-             {"type":"docs","section":"Documentation","hidden":false},
-             {"type":"build","section":"Build System","hidden":false},
-             {"type":"ci","section":"Continuous Integration","hidden":false},
-             {"type":"test","section":"Tests","hidden":false},
-             {"type":"chore","section":"Chores","hidden":false}]
+          This repository is under an enterprise policy that blocks
+          `GITHUB_TOKEN` from creating pull requests, so release-please
+          cannot open the release PR.
 
-          # Every place the version is duplicated. All three must move together
-          # or the shipped binary reports the wrong version to the updater.
-          extra-files: |
-            package.json
-            src-tauri/Cargo.toml
-            src-tauri/tauri.conf.json
+          Fix: add a `RELEASE_PLEASE_TOKEN` secret holding a token with
+          `contents: write` and `pull-requests: write` (a
+          `release-please-bot@...` fine-grained token is the usual choice).
+
+          Until then, releases are cut by hand — see docs/BRANCHING.md.
+          EOF
 
       - name: Summarise release state
         if: always()
         env:
-          OUT: ${{ steps.release.outputs.tag_name }}
+          TAG: ${{ steps.release.outputs.tag_name }}
+          PR: ${{ steps.release.outputs.pr }}
         run: |
           {
             echo "### release-please"
             echo ""
-            if [ -n "$OUT" ]; then
-              echo "Tagged \`$OUT\` — release.yml will build signed bundles."
+            if [ -n "$TAG" ]; then
+              echo "Tagged $TAG -- release.yml will build the signed bundles."
+            elif [ -n "$PR" ]; then
+              echo "Release PR updated: $PR"
+              echo ""
+              echo "Review the CHANGELOG diff. A feat filed as a fix ships a"
+              echo "release that under-reports what changed."
             else
-              echo "No release created this run."
-              echo "If the release PR is open, merge it to cut a release."
+              echo "Nothing to release. Commits since the last tag were"
+              echo "docs/chore/ci/test only, which do not move the version."
             fi
           } >> "$GITHUB_STEP_SUMMARY"

@@ -96,31 +96,74 @@ The workflow posts a reminder into the job summary when a hotfix is merged.
 
 ## Branch protection
 
-Configure under **Settings → Branches → Branch protection rules**. The
-`branch-flow.yml` checks are advisory annotations; protection rules are what
-actually block a merge.
+These rules are **already applied** to `main` and `develop` via the GitHub API.
+Re-applying them (or changing them) needs a token with `administration: write`.
+
+> The check names below must match the job names in the workflow files
+> character-for-character. A required check that never matches a real job is
+> accepted silently by the API and simply never blocks anything, so a typo
+> weakens the gate without any error. Verify after any rename:
+>
+> ```bash
+> gh api repos/functionfly/vault-desktop/branches/main/protection \
+>   --jq '.required_status_checks.contexts'
+> ```
 
 ### `main`
 
 | Setting | Value |
 | --- | --- |
 | Require a pull request before merging | on |
-| Require approvals | 1 (2 for anything under `src-tauri/src/crypto.rs`) |
-| Require status checks | `branch flow / validate branch flow`, `conventional commit title`, `CI / frontend`, `CI / rust`, `CI / build (ubuntu-latest)`, `CI / build (macos-latest)`, `CI / build (windows-latest)` |
-| Require branches to be up to date | on |
-| Restrict who can push | release-please + humans; never Dependabot |
-
-Note that "Require status checks" cannot express *which branches* may target
-`main`. That is the one thing `branch-flow.yml` covers, so both are needed:
-protection blocks a bad merge, branch-flow explains why.
+| Require approvals | 1 |
+| Require code owner reviews | on |
+| Require last push approval | on |
+| Dismiss stale reviews | on |
+| Require branches to be up to date | on (`strict`) |
+| Require linear history | on |
+| Force pushes / deletions | blocked |
+| Required status checks | `CI / frontend (tsc + vitest)`, `CI / rust (fmt + clippy + test)`, `CI / build (ubuntu-latest)`, `CI / build (macos-latest)`, `CI / build (windows-latest)`, `CI / release scripts`, `branch flow / validate branch flow`, `conventional commit title` |
 
 ### `develop`
 
-| Setting | Value |
-| --- | --- |
-| Require a pull request before merging | on |
-| Require approvals | 1 |
-| Require status checks | the same CI set |
+Identical required checks, with these differences:
+
+| Setting | Value | Why |
+| --- | --- | --- |
+| Require branches to be up to date | off (`strict: false`) | Topic branches must be able to merge without a merge commit. |
+| Require linear history | off | Allows the hotfix back-merge. |
+| Require code owner reviews | off | Faster day-to-day iteration. |
+| Require last push approval | off | Same. |
+
+## Releasing without release-please (current workaround)
+
+The owner org is under an **enterprise policy that forbids the Actions token
+from creating or approving pull requests**:
+
+```
+The enterprise does not allow GitHub Actions to create or approve pull requests
+```
+
+`release-please` needs exactly that, so it cannot open its release PR here.
+Until a PAT is provisioned, cut a release by hand:
+
+```bash
+git switch main
+git pull
+
+# 1. Bump all four version sources to the same value.
+#    package.json, src-tauri/Cargo.toml, src-tauri/tauri.conf.json
+#    (.release-please-manifest.json records what release-please last tagged.)
+
+# 2. Add the CHANGELOG section.
+
+# 3. Commit, merge via PR, then tag:
+git tag -a v0.1.1 -m "v0.1.1"
+git push origin v0.1.1
+```
+
+To restore the automated path, add a `RELEASE_PLEASE_TOKEN` secret
+(contents: write, pull-requests: write). The workflow already prefers it and
+falls back to `GITHUB_TOKEN`.
 
 ## Commit signing
 

@@ -4,6 +4,27 @@
 # the bearer token, so it is the surface that matters most. The TypeScript
 # layer is the untrusted webview: it parses orchestrator responses and must
 # never be trusted to reach the keychain directly.
+#
+# ── WHY THIS WORKFLOW CURRENTLY SKIPS ITSELF ───────────────────────────────
+# Code scanning requires GitHub Code Security, which this repository does not
+# have. It is private, and the owner org sits under an enterprise policy that
+# does not grant it. Every analyze step therefore fails with:
+#
+#   ##[error]Please verify that the necessary features are enabled: Code
+#   Security must be enabled for this repository to use code scanning.
+#
+# Leaving that as a permanent red check is worse than not having the check:
+# it trains people to ignore failures, and it buries the ones that matter.
+# Deleting the workflow would instead lose the analysis the moment someone
+# enables the feature.
+#
+# So both language jobs first probe whether code scanning is available and
+# skip themselves with a visible note when it is not. Turn Code Security on
+# under:
+#
+#   Settings -> Code security and analysis -> Enable
+#
+# and the next run performs real analysis with no further change here.
 name: CodeQL
 
 on:
@@ -13,7 +34,7 @@ on:
     branches: [main, develop]
   schedule:
     # Weekly, Monday 05:32 UTC. Off the hour to avoid the GitHub Actions
-    # scheduling congestion at :00.
+    # scheduling congestion on the hour.
     - cron: '32 5 * * 1'
 
 permissions:
@@ -26,24 +47,71 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  # Decides once whether results can actually be uploaded. Both language
+  # jobs read this rather than each probing independently.
+  detect:
+    name: detect code scanning availability
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      enabled: ${{ steps.check.outputs.enabled }}
+    steps:
+      - name: Probe the code-scanning analyses endpoint
+        id: check
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPO: ${{ github.repository }}
+        run: |
+          set -uo pipefail
+
+          # 200 -> feature on, 404 -> not provisioned for this repo. Any other
+          # status (rate limit, token scope) is treated as unknown and left
+          # enabled, so a transient API problem never silently disables
+          # scanning.
+          code="$(curl -s -o /dev/null -w '%{http_code}' \
+            -H "Authorization: Bearer $GH_TOKEN" \
+            -H "Accept: application/vnd.github+json" \
+            "https://api.github.com/repos/$REPO/code-scanning/analyses")"
+
+          case "$code" in
+            200)
+              echo "enabled=true" >> "$GITHUB_OUTPUT"
+              ;;
+            404)
+              echo "enabled=false" >> "$GITHUB_OUTPUT"
+              echo "::notice::Code Security is not enabled for $REPO; skipping CodeQL."
+              ;;
+            *)
+              echo "enabled=true" >> "$GITHUB_OUTPUT"
+              echo "::warning::Unexpected status $code probing code scanning; assuming enabled."
+              ;;
+          esac
+
+      - name: Explain the skip
+        if: steps.check.outputs.enabled != 'true'
+        shell: bash
+        run: |
+          cat >> "$GITHUB_STEP_SUMMARY" <<'EOF'
+          ### CodeQL skipped — Code Security is not enabled
+
+          Static analysis is **not running** for this push. It starts
+          automatically once Code Security is enabled:
+
+          > Settings -> Code security and analysis -> Enable
+
+          Private repositories need GitHub Advanced Security; public ones get
+          code scanning at no cost.
+          EOF
+
   analyze-rust:
     name: Analyze Rust
+    needs: detect
+    if: needs.detect.outputs.enabled == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 60
     steps:
       - uses: actions/checkout@v4
-
-      - uses: dtolnay/rust-toolchain@stable
-
-      - name: Install Linux Tauri deps
-        # `autobuild` links the crate, which requires the GTK / WebKitGTK /
-        # keyring-dbus system libraries to be present.
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y \
-            libwebkit2gtk-4.1-dev build-essential libssl-dev \
-            libgtk-3-dev libayatana-appindicator3-dev librsvg2-dev \
-            libsecret-1-dev
 
       - uses: github/codeql-action/init@v3
         with:
@@ -55,13 +123,13 @@ jobs:
           #    build mode. Please try using one of the following build modes
           #    instead: none."
           # `none` analyses the source tree without compiling. For this crate
-          # that loses nothing material: the crypto primitive calls are all
-          # library calls into audited aes-gcm/pbkdf2/sha2, and the
-          # taint-relevant logic (HTTP header assembly in api.rs, zeroizing in
-          # store.rs) is plain Rust the extractor handles from source.
+          # that costs no material coverage: the taint-relevant logic (HTTP
+          # header assembly in api.rs, zeroizing in store.rs) is plain Rust
+          # the extractor handles from source, and the crypto primitives all
+          # live in the audited aes-gcm/pbkdf2/sha2 crates.
           #
-          # If a future version adds proc macros that need expansion for
-          # accuracy, switch to `build-mode: manual` and point `build` at
+          # If a future version adds proc macros needing expansion for
+          # accuracy, switch to `build-mode: manual` and point a build step at
           # `cargo build --all-targets` under src-tauri.
           build-mode: none
           config-file: ./.github/codeql/config.yml
@@ -69,36 +137,11 @@ jobs:
       - uses: github/codeql-action/analyze@v3
         with:
           category: /language:rust
-          # The repository is private and does not have GitHub Advanced
-          # Security / Code Security enabled, so `analyze` cannot upload a
-          # SARIF and fails with:
-          #   "Code Security must be enabled for this repository to use code
-          #    scanning."
-          # That is a repository *setting* (Settings -> Code security and
-          # analysis -> Enable), not something a workflow can grant itself.
-          #
-          # continue-on-error keeps the pipeline green until someone enables
-          # it, and the notice below makes the gap visible on every run
-          # instead of silently disabling coverage. When Code Security is
-          # turned on, delete continue-on-error and the following step.
-          continue-on-error: true
-
-      - name: Warn that results are not being uploaded
-        if: always()
-        shell: bash
-        run: |
-          {
-            echo "### CodeQL — Rust"
-            echo ""
-            echo "Analysis ran, but results are **not uploaded** unless Code"
-            echo "Security is enabled for this repository."
-            echo ""
-            echo "Settings -> Code security and analysis -> Enable. Free for"
-            echo "public repos; private repos need GitHub Advanced Security."
-          } >> "$GITHUB_STEP_SUMMARY"
 
   analyze-javascript:
     name: Analyze TypeScript
+    needs: detect
+    if: needs.detect.outputs.enabled == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 45
     steps:
@@ -111,24 +154,10 @@ jobs:
           # no framework-specific build for CodeQL to observe, so letting
           # autobuild guess adds several minutes and no coverage. (It also
           # emits a harmless "Skipping path node_modules, which does not
-          # exist" because the TypeScript job never installs deps.)
+          # exist" because this job deliberately installs no dependencies.)
           build-mode: none
           config-file: ./.github/codeql/config.yml
 
       - uses: github/codeql-action/analyze@v3
         with:
           category: /language:javascript-typescript
-          # Same reason as the Rust job: Code Security is not enabled, so the
-          # SARIF upload fails. See the note there.
-          continue-on-error: true
-
-      - name: Warn that results are not being uploaded
-        if: always()
-        shell: bash
-        run: |
-          {
-            echo "### CodeQL — TypeScript"
-            echo ""
-            echo "Analysis ran, but results are **not uploaded** unless Code"
-            echo "Security is enabled for this repository."
-          } >> "$GITHUB_STEP_SUMMARY"

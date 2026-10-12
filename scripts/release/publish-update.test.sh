@@ -61,8 +61,28 @@ expect_exit "load-updater-env.sh without key files → exit 1" 1 \
   env -i PATH="$PATH" VAULT_KEY_DIR="/nonexistent" bash -c "source $LOAD_ENV"
 
 # 7. load-updater-env.sh: happy path (uses the real key we generated)
+#
+# This check asserts the loader's contract — that sourcing it exports a
+# non-empty pubkey, a private-key path, and that the path exists and is
+# mode 0600 — WITHOUT requiring the real signing key to be present.
+#
+# It previously sourced the loader with no VAULT_KEY_DIR override, which
+# silently depended on `load-updater-env.sh`'s default of
+# <operator key dir>. That passed on the author's machine and failed on
+# every CI runner with:
+#
+#   x load-updater-env.sh loads env (round-trip ok) (expected exit=0, got 1)
+#
+# because the loader correctly exits 1 when the key files are absent (that
+# is check #6's contract, verified just above).
+#
+# A throwaway Ed25519 keypair is generated into a temp dir instead. It is
+# never uploaded, never used to sign a real artefact, and is deleted on
+# exit. This keeps the check hermetic: it tests the loader, not whether a
+# particular machine happens to hold a key.
 expect_exit "load-updater-env.sh loads env (round-trip ok)" 0 \
-  bash -c "source $LOAD_ENV && test -n \"\$VAULT_UPDATER_PUBKEY\" && test -n \"\$TAURI_SIGNING_PRIVATE_KEY_PATH\""
+  env VAULT_KEY_DIR="$(mktemp -d)" LOAD_ENV_PATH="$LOAD_ENV" \
+  bash "${DIR}/_load-env-smoke.sh"
 
 # 8. (Optional) End-to-end round-trip against the bundled mock R2.
 #    Skipped unless `MOCK_R2_STORE` is set, `python3` is on PATH,

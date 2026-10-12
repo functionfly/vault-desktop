@@ -237,10 +237,14 @@ jobs:
         # invoked. If the round-trip is later wanted in CI, install the v2
         # CLI from awscli.amazonaws.com (not the apt package) and set
         # MOCK_R2_STORE=./scripts/release/_mock-r2.
+        #
+        # openssh-client provides `ssh-keygen`, which the env-loader check
+        # uses to build a throwaway keypair so the test does not depend on a
+        # real signing key existing on the runner.
         shell: bash
         run: |
           sudo apt-get update
-          sudo apt-get install -y python3
+          sudo apt-get install -y python3 openssh-client
           ./scripts/release/publish-update.test.sh
 
       - name: Upload smoke script
