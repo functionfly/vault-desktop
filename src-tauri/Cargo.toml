@@ -3,7 +3,12 @@ name = "functionfly-vault-desktop"
 version = "0.1.0"
 description = "Cross-platform zero-knowledge vault client for FunctionFly"
 edition = "2021"
-rust-version = "1.80"
+# MSRV. The Tauri v2 dependency graph requires 1.90 (tauri-macros,
+# tauri-plugin, tauri-build, tauri-codegen, tauri-utils and tray-icon all
+# declare `rust-version = "1.90"`), so declaring 1.80 here was a lie that
+# only surfaced when someone tried to build with the toolchain the
+# declaration promised.
+rust-version = "1.90"
 default-run = "functionfly-vault-desktop"
 
 [build-dependencies]
@@ -13,9 +18,16 @@ tauri-build = { version = "2.6.3", features = [] }
 # Tauri v2 — pinned to the same minor as studio-desktop so the two apps
 # stay on the same plugin API surface.
 tauri = { version = "2.11.5", features = [] }
-tauri-plugin-dialog = "2.7.3"
-tauri-plugin-os = "2.3.2"
-tauri-plugin-process = "2.3.1"
+# NOTE: `tauri-plugin-dialog`, `tauri-plugin-os` and `tauri-plugin-process`
+# were removed on 2026-11-03. They were Cargo dependencies and their
+# permissions were granted in `capabilities/default.toml`, but no plugin
+# was ever registered in `lib.rs` and no webview code called them — so the
+# webview was granted command surfaces that did not exist while the
+# crates still cost build time and binary size.
+#
+# `theme.ts` uses `core:window:allow-theme` (a core permission), not the
+# `os` plugin, so the OS theme still tracks correctly.
+#
 # Signed auto-updater. Mirrors studio-desktop/src-tauri/Cargo.toml:21
 # (Phase 5, plan `.kilo/plans/1787430451513-studio-tauri-rust-migration.md`
 # §5). The plugin is wired in `lib.rs`; the per-channel endpoint + Ed25519

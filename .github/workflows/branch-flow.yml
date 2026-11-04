@@ -43,9 +43,14 @@ jobs:
           set -euo pipefail
 
           # release-please opens its PR from a branch it owns. It is the only
-          # thing allowed to touch `main` besides a hotfix.
+          # thing allowed to touch `main` besides a hotfix and a promotion.
           is_release_pr() { [[ "$HEAD" == release-please--* ]]; }
           is_hotfix()     { [[ "$HEAD" == hotfix/* ]]; }
+          # A promotion carries `develop` into `main`. release-please scans
+          # `main`'s commit history (`target-branch: main`), so a commit only
+          # becomes releasable once it has been promoted. Without this the
+          # release PR would never see the work.
+          is_promotion()  { [[ "$HEAD" == promote/* ]]; }
 
           fail() {
             echo "::error title=Invalid branch target::$1"
@@ -63,7 +68,7 @@ jobs:
 
           case "$BASE" in
             develop)
-              if is_release_pr || is_hotfix; then
+              if is_release_pr || is_hotfix || is_promotion; then
                 echo "::error title=Wrong target::\`$HEAD\` should target \`main\`, not \`develop\`."
                 exit 1
               fi
@@ -97,13 +102,18 @@ jobs:
             main)
               # A hotfix may be opened straight against main so a production
               # regression can be fixed without first landing on develop.
+              # A promotion (`promote/*`) carries develop into main; the
+              # release PR release-please opens afterwards is what bumps the
+              # version and writes the CHANGELOG.
               if is_hotfix; then
                 echo "OK: hotfix \`$HEAD\` → \`main\` (must be back-merged into develop)."
+              elif is_promotion; then
+                echo "OK: promotion \`$HEAD\` → \`main\`."
               elif is_release_pr; then
                 echo "OK: release-please PR \`$HEAD\` → \`main\`."
               else
                 echo "::error title=Direct commit to main::\`$HEAD\` may not target \`main\`."
-                echo "::error::Only a release-please PR or a hotfix/* branch may merge into \`main\`. Put this work on a topic branch and open a PR into \`develop\`."
+                echo "::error::Only a release-please PR, a promotion/* branch, or a hotfix/* branch may merge into \`main\`. Put this work on a topic branch and open a PR into \`develop\`."
                 exit 1
               fi
               ;;

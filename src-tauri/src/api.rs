@@ -236,6 +236,12 @@ pub struct VaultClient {
     user: RwLock<Option<LoginUser>>,
 }
 
+impl Default for VaultClient {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl VaultClient {
     pub fn new() -> Self {
         let http = reqwest::Client::builder()
@@ -355,9 +361,7 @@ impl VaultClient {
         let resp = self
             .http
             .post(format!("{base}/v1/auth/refresh"))
-            .json(&Body {
-                refresh_token: refresh_token,
-            })
+            .json(&Body { refresh_token })
             .send()
             .await
             .map_err(|e| ApiError::Transport(e.to_string()))?;

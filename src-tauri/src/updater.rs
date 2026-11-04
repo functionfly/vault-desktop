@@ -7,9 +7,16 @@
 //!   The Ed25519 public key (PEM) printed by `tauri signer generate`.
 //! - `VAULT_UPDATER_{STABLE,BETA}_URL` — optional per-channel endpoint.
 //!   When unset, defaults to
-//!   `https://updates.functionfly.app/vault/{channel}/{{target_version}}/{{current_version}}`
+//!   `https://updates.functionfly.app/vault/{channel}/manifest.json`
 //!   so a vanilla vault binary still works out of the box once the R2
 //!   bucket `functionfly-vault-updates` is provisioned.
+//!
+//!   The endpoint is the channel's *static* manifest. `tauri-plugin-updater`
+//!   substitutes only `{{current_version}}`, `{{target}}`, `{{arch}}` and
+//!   `{{bundle_type}}`; there is no `{{target_version}}` placeholder, and
+//!   the previous default embedded one, so the plugin issued a request
+//!   for a URL containing the literal text `{{target_version}}` and the
+//!   channel was permanently unreachable.
 //!
 //! Two channels (stable + beta) cover the launch surface; insider-style
 //! rapid-iteration channels are an explicit follow-up because the vault
@@ -36,7 +43,7 @@ use thiserror::Error;
 
 /// Release channels. The `as_str` value is the path segment in the
 /// canonical R2 bucket layout
-/// (`vault/{channel}/{target_version}/...`).
+/// (`vault/{channel}/manifest.json` + `vault/{channel}/{version}/…`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum UpdaterChannel {
     Stable,
@@ -86,9 +93,11 @@ pub struct UpdaterConfig {
     /// committed.
     pub pubkey: String,
 
-    /// Per-channel update-manifest endpoint. The `tauri-plugin-updater`
-    /// substitutes `{{target_version}}` and `{{current_version}}` when
-    /// fetching the manifest.
+    /// Per-channel update-manifest endpoint. The manifest is a static
+    /// document published once per release, so the URL carries no
+    /// version placeholder. `tauri-plugin-updater` substitutes
+    /// `{{current_version}}`, `{{target}}`, `{{arch}}` and
+    /// `{{bundle_type}}` — nothing else.
     pub channel_urls: HashMap<UpdaterChannel, String>,
 }
 
@@ -129,7 +138,7 @@ impl UpdaterConfig {
             let env_name = format!("VAULT_UPDATER_{}_URL", channel.env_suffix());
             let url = std::env::var(&env_name).unwrap_or_else(|_| {
                 format!(
-                    "https://updates.functionfly.app/vault/{}/{{{{target_version}}}}/{{{{current_version}}}}",
+                    "https://updates.functionfly.app/vault/{}/manifest.json",
                     channel
                 )
             });
@@ -250,8 +259,22 @@ mod tests {
             let url = cfg.channel_url(ch).unwrap();
             assert!(url.starts_with("https://updates.functionfly.app/vault/"));
             assert!(url.contains(ch.as_str()));
-            assert!(url.contains("{{target_version}}"));
-            assert!(url.contains("{{current_version}}"));
+            assert!(url.ends_with("/manifest.json"));
+            // `tauri-plugin-updater` substitutes only these four tokens.
+            // A `{{target_version}}` in the endpoint is never expanded and
+            // would make the channel permanently unreachable.
+            assert!(!url.contains("{{target_version}}"));
+            for placeholder in [
+                "{{current_version}}",
+                "{{target}}",
+                "{{arch}}",
+                "{{bundle_type}}",
+            ] {
+                assert!(
+                    !url.contains(placeholder),
+                    "unexpected placeholder {placeholder}"
+                );
+            }
         }
     }
 

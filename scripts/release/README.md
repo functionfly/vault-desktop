@@ -12,11 +12,14 @@ side-car.
 | `KEY-FINGERPRINT.txt`                                    | Public key path, SHA-256, algorithm, rotation procedure. Reference for the rotating signer.                            |
 | `load-updater-env.sh`                                    | Sources `VAULT_UPDATER_PUBKEY` + `TAURI_SIGNING_PRIVATE_KEY_*` from `~/.tauri/` into the current shell.                |
 | `provision-r2-bucket.sh`                                 | One-time bootstrap: head-bucket → versioning → 30-day noncurrent lifecycle → read-only CORS → write/read/delete probe. |
-| `publish-update.sh <channel> <version> <side-car> <sig>` | Uploads side-car + `.sig` + manifest to the R2 bucket under the canonical tauri-plugin-updater schema.                 |
-| `publish-update.test.sh`                                 | 8 smoke checks (arg parsing + 1 end-to-end mock R2 round-trip).                                                        |
+| `publish-update.sh <channel> <version> <side-car> <sig> [target]` | Uploads one side-car + `.sig` and merges that platform's entry into the channel manifest.                    |
+| `publish-updater-assets.sh <channel> <version> <dir>`   | Publishes every updater artefact in a directory, building one manifest across all platforms.                             |
+| `render-manifest.py`                                     | The manifest contract, in one place. Emits valid JSON and refuses a target triple, a non-base64 signature, or a repointed platform. |
+| `updater-targets.py`                                     | Maps an artefact filename to the manifest target keys the plugin looks up.                                               |
+| `publish-update.test.sh`                                 | Smoke checks: arg parsing, the manifest contract, the artefact→target mapping, and an optional mock-R2 round-trip.       |
 | `mock-r2.py`                                             | Stateful S3-compatible mock for testing `publish-update.sh` without touching real R2.                                  |
 | `evidence/2026-10-06-mock-r2-round-trip.md`              | End-to-end evidence captured against the mock (stable/0.1.1 + beta/0.2.0-rc.1, byte-identical SHA-256).                |
-| `evidence/2026-10-06-real-r2-publish.md`                 | End-to-end evidence captured against the **real** `functionfly-vault-updates` R2 bucket (2026-10-06).                  |
+| `evidence/2026-10-06-real-r2-publish.md`                 | End-to-end evidence captured against the **real** R2 bucket (2026-10-06).                                                |
 
 ## Standard operator workflow
 
@@ -35,9 +38,16 @@ export R2_BUCKET=functionfly-vault-updates
 unset R2_ENDPOINT_OVERRIDE
 
 # 3. Publish a new version
+#    (publish one artefact + its .sig; the platform key is derived from
+#     the file name, or pass it explicitly)
 R2_BUCKET=functionfly-vault-updates ./scripts/release/publish-update.sh stable 0.1.2 \
     /tmp/functionfly-vault-desktop_0.1.2_amd64.AppImage.tar.gz \
     /tmp/functionfly-vault-desktop_0.1.2_amd64.AppImage.tar.gz.sig
+
+#    …or publish every artefact at once, building one manifest that
+#    covers all platforms:
+R2_BUCKET=functionfly-vault-updates ./scripts/release/publish-updater-assets.sh \
+    stable 0.1.2 /tmp/vault-sidecars/
 
 # 4. Confirm objects landed
 aws s3 ls s3://functionfly-vault-updates/vault/stable/ --recursive --endpoint-url "$R2_ENDPOINT"
@@ -91,8 +101,10 @@ What needs an admin-scoped token:
 ## Channel/version format
 
 - `channel` ∈ {`stable`, `beta`}. URL layout:
-  `https://updates.functionfly.app/vault/{channel}/{{target_version}}/{{current_version}}`
-  (Tauri convention; `{{...}}` tokens are replaced at request time).
+  `https://updates.functionfly.app/vault/{channel}/manifest.json`
+  (the channel's static manifest — the plugin substitutes only
+  `{{current_version}}`, `{{target}}`, `{{arch}}` and `{{bundle_type}}`;
+  there is no `{{target_version}}` placeholder).
 - `version` is a semver string (`MAJOR.MINOR.PATCH[-PRERELEASE]`) — the
   script rejects empty / non-semver input at the pre-flight check.
 
@@ -106,28 +118,52 @@ What needs an admin-scoped token:
   "pub_date": "2026-10-12T10:15:30Z",
   "notes": "vault 0.1.2 (channel: stable)",
   "platforms": {
-    "x86_64-unknown-linux-gnu": {
-      "url": "https://updates.functionfly.app/vault/stable/0.1.2/functionfly-vault-desktop_0.1.2.tar.gz",
-      "signature": "https://updates.functionfly.app/vault/stable/0.1.2/functionfly-vault-desktop_0.1.2.tar.gz.sig"
+    "linux-x86_64-appimage": {
+      "url": "https://updates.functionfly.app/vault/stable/0.1.2/functionfly-vault-desktop_0.1.2_amd64.AppImage.tar.gz",
+      "signature": "<the base64 minisign signature, i.e. the content of the .sig file>"
+    },
+    "linux-x86_64": {
+      "url": "https://updates.functionfly.app/vault/stable/0.1.2/functionfly-vault-desktop_0.1.2_amd64.AppImage.tar.gz",
+      "signature": "<the same base64 minisign signature>"
     }
   }
 }
 ```
 
-For multi-platform releases, add a `<triple>` entry under `platforms` per
-build target (`aarch64-unknown-linux-gnu`, `x86_64-apple-darwin`, etc.).
-`publish-update.sh` currently writes the Linux x86_64 triple; multi-platform
-releases should extend the manifest by hand after the script finishes.
+Three properties are load-bearing:
+
+1. **The platform key is `{os}-{arch}` or `{os}-{arch}-{installer}`** —
+   `linux-x86_64`, `darwin-aarch64-app`, `windows-x86_64-nsis`. The plugin
+   tries `{os}-{arch}-{bundle_type}` first and then `{os}-{arch}`. A Rust
+   target triple such as `x86_64-unknown-linux-gnu` is **never** looked up,
+   so a manifest keyed that way resolves to nothing on every platform.
+2. **`signature` holds the signature, not a URL to it.** The plugin
+   base64-decodes the field and minisign-verifies the downloaded archive
+   against it. A URL here fails verification at install time.
+3. **`notes` is a JSON string.** The manifest is parsed as JSON; a
+   shell-quoted value produces a document no client can parse.
+
+The bundle type is part of the key because a `.deb` user must be offered the
+`.deb` archive, not the AppImage that shares its architecture.
+`updater-targets.py` owns the artefact→key mapping, and
+`publish-update.test.sh` asserts it.
+
+A multi-platform release is one manifest containing every platform's entry.
+`publish-update.sh` merges a platform into the channel's existing manifest
+when the manifest is for the same version, and replaces it wholesale when
+the version differs — a manifest for an older version must not leak its
+platform entries forward, because those entries point at an older archive.
 
 ## Failure modes & their recovery
 
 | Symptom                                                                                 | Cause                                                                | Recovery                                                                                             |
 | --------------------------------------------------------------------------------------- | -------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------- |
-| `publish-update: VAULT_UPDATER_PUBKEY is required`                                      | Forgot to `source scripts/release/load-updater-env.sh`               | `source scripts/release/load-updater-env.sh` before invoking `publish-update.sh`.                    |
+| `publish-update: R2_ACCOUNT_ID is required`                                              | R2 credentials not exported                                           | Export `R2_ACCOUNT_ID` / `R2_ACCESS_KEY_ID` / `R2_SECRET_ACCESS_KEY`, or source the operator env.    |
 | `AccessDenied` on the manifest PUT                                                      | `s3:PutObjectAcl` not granted to the dev token (Cloudflare R2 quirk) | Already handled: script falls back to `s3 cp` (PUT with bucket-owner read).                          |
 | `AccessDenied` on `PutBucketVersioning` / `ListBuckets`                                 | Dev token is bucket-scoped, not admin                                | Re-run `provision-r2-bucket.sh` with an admin-scoped token.                                          |
 | `cargo-tauri signer verify` says the signature is invalid                               | Wrong pubkey or wrong side-car                                       | Re-derive with the pubkey in `KEY-FINGERPRINT.txt`; re-sign with `cargo-tauri signer sign`.          |
-| Object stored at `vault/<channel>/<version>/functionfly-vault-desktop_<version>.tar.gz` | The side-car name matters — the plugin resolves by exact basename    | Keep the side-car named `functionfly-vault-desktop_<version>_<arch>.tar.gz`; the script enforces it. |
+| The client reports "no update available" but a release exists                            | The manifest's platform key does not match what the plugin looks up   | Run `updater-targets.py` on the artefact name and use its key verbatim.                               |
+| The client downloads but refuses to install                                              | The manifest's `signature` is a URL instead of the signature content  | Re-publish; `render-manifest.py` embeds the `.sig` content.                                          |
 
 ## Rollback
 
@@ -154,8 +190,7 @@ downgrade to `0.1.1`.
 
 ## Open follow-ups
 
-- **CI integration**: the scripts are wired for `dotenvx get …` + `export AWS_*`; a CI worker that has access to `.env.keys` can run the same commands.
-- **Multi-platform manifest**: currently hardcoded to `x86_64-unknown-linux-gnu`. Extend `publish-update.sh` to write a `platforms.<triple>` entry per build artifact, or run the script once per platform.
+- **CI integration**: the scripts are wired for `dotenvx get …` + `export AWS_*`; a CI worker that has access to `.env.keys` can run the same commands. `release.yml` now does this itself when the `R2_*` secrets are present.
 - **Admin-scoped R2 token**: needs to be provisioned by the operator for `provision-r2-bucket.sh` (versioning + lifecycle + CORS). Documented in the script header.
 
 ## See also

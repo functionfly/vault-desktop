@@ -251,30 +251,20 @@ export const ipc = {
 } as const;
 
 // ── Input shapes ────────────────────────────────────────────────────────
-
-export interface CreateSecretInput {
-  name: string;
-  secret_type: string;
-  plaintext: string;
-  namespace?: string;
-  description?: string;
-  scopes?: string[];
-  expires_at?: string | null;
-}
-
-export interface UpdateSecretInput {
-  id: string;
-  name?: string;
-  description?: string;
-  scopes?: string[];
-  namespace?: string;
-}
-
-export interface RotateSecretInput {
-  id: string;
-  plaintext: string;
-  reason?: string;
-}
+//
+// `CreateSecretInput`, `UpdateSecretInput` and `RotateSecretInput` are
+// declared once, in the "write path" section above. They were previously
+// declared twice — TypeScript silently merged the two declarations, so
+// the effective type accepted fields (`expires_at` on create,
+// `namespace` on update) that the Rust command structs never read. A
+// caller could set them and watch them vanish without any error.
+//
+// The shapes below mirror the Rust command structs exactly:
+//
+//   CreateSecretInput  { name, description, secret_type, plaintext,
+//                        namespace, scopes }
+//   UpdateSecretInput  { id, name, description, scopes }
+//   RotateSecretInput  { id, plaintext, reason }
 
 export interface GenerateTokenInput {
   id: string;

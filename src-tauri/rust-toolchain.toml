@@ -1,9 +1,14 @@
 # Rust toolchain pin.
 #
-# Cargo.toml declares `rust-version = "1.80"` (the MSRV), which is what the
+# Cargo.toml declares `rust-version = "1.90"` (the MSRV), which is what the
 # build must keep compiling against. This file pins what CI and local dev
 # actually *use* — deliberately newer than the MSRV so current stable
-# toolchains can compile the Tauri 2.11 dependency graph.
+# toolchains can compile the Tauri 2 dependency graph.
+#
+# The MSRV was raised from 1.80 to 1.90 on 2026-11-03: the Tauri v2
+# dependency graph (tauri-macros, tauri-plugin, tauri-build, tauri-codegen,
+# tauri-utils, tray-icon) declares `rust-version = "1.90"`, so 1.80 was
+# never actually buildable.
 #
 # `channel = "stable"` is intentional: pinning an exact version would freeze
 # the repo onto a toolchain that eventually stops receiving security patches.

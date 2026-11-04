@@ -1,6 +1,23 @@
-@tailwind base;
-@tailwind components;
-@tailwind utilities;
+/* Tailwind v4 entry point.
+   v3 used the `@tailwind base/components/utilities` directives; v4
+   imports the whole framework in one line. */
+@import "tailwindcss";
+
+/* The JavaScript config still owns the brand palette and the content
+   globs. `@config` is how v4 loads a v3-style JS config. */
+@config "../tailwind.config.js";
+
+/* DARK MODE — the "class" strategy, not Tailwind's default media query.
+   Under a Tauri webview `prefers-color-scheme` does not reliably track
+   the OS setting, so a media-query strategy renders the app permanently
+   light. `src/lib/theme.ts` reads the theme from Tauri
+   (`getCurrentWindow().theme()` + `onThemeChanged`) and sets
+   `class="dark"` on <html>; this directive binds the `dark:` utilities to
+   that class.
+
+   v4 has no `darkMode` key — the strategy is declared in CSS. Dropping
+   this line would silently move the app back to `prefers-color-scheme`. */
+@custom-variant dark (&:where(.dark, .dark *));
 
 @layer base {
   /* `data-theme` is written by src/lib/theme.ts alongside the `dark` class.
@@ -29,13 +46,26 @@
   }
 }
 
+/* The shared button base.
+   `@utility` (not `@layer components`) because the variants below
+   `@apply btn`. Tailwind v4 only lets `@apply` reference real
+   utilities — in v3 a custom class inside `@layer components` was
+   accepted, and the same construct now fails the build with:
+
+     Cannot apply unknown utility class `btn`
+
+   `@utility` registers `btn` as a genuine utility, which restores the
+   v3 behaviour. The markup uses `btn-primary` / `btn-secondary` /
+   `btn-danger` on their own, so the base has to be inlined into each
+   variant — dropping `@apply btn` would strip every button's layout. */
+@utility btn {
+  @apply inline-flex items-center justify-center gap-2 rounded-md px-3 py-1.5
+         text-sm font-medium transition-colors
+         focus:outline-none focus-visible:ring-2 focus-visible:ring-brand-500
+         disabled:opacity-50 disabled:cursor-not-allowed;
+}
+
 @layer components {
-  .btn {
-    @apply inline-flex items-center justify-center gap-2 rounded-md px-3 py-1.5
-           text-sm font-medium transition-colors
-           focus:outline-none focus-visible:ring-2 focus-visible:ring-brand-500
-           disabled:opacity-50 disabled:cursor-not-allowed;
-  }
   .btn-primary {
     @apply btn bg-brand-600 text-white hover:bg-brand-700;
   }

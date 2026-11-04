@@ -54,19 +54,18 @@ list_audit_by_action, list_audit_by_actor
 
 ### Tests
 
-- 31 Rust unit tests (`cargo test --lib`) — AES-256-GCM roundtrip,
+- 34 Rust unit tests (`cargo test --lib`) — AES-256-GCM roundtrip,
 - 10 mockito-backed integration tests
   (`cargo test --test orchestrator_mock`) — login round-trip, CSRF
   fetch + retry, non-loopback base-URL rejection, fail-closed without
   a token, captcha-required surfacing.
-- 28 vitest contract tests (`bunx vitest run`) — every typed wrapper
+- 10 device-flow integration tests (`cargo test --test device_flow`) —
+  the RFC 8628 device-grant exchange.
+- 58 vitest contract tests (`bunx vitest run`) — every typed wrapper
   in `src/lib/ipc.ts` sends the right (command, args) shape; typed
   `{kind, message}` rejections parse into `VaultIpcError`.
-- **Total: 69/69 tests pass** (31 Rust lib + 10 mockito integration +
-  28 vitest — the vitest count grew from 25 → 28 with the updater
-  contract tests: vault_check_update + vault_apply_update for both
-  channels; the Rust lib count grew from 23 → 31 with 8 updater
-  config tests).
+- **Total: 112/112 tests pass** (34 Rust lib + 10 mockito integration +
+  10 device flow + 58 vitest).
 
 ### Updater
 
@@ -78,7 +77,7 @@ list_audit_by_action, list_audit_by_actor
 - Two channels: `stable` and `beta`. Per-channel endpoint env vars
   (`VAULT_UPDATER_STABLE_URL`, `VAULT_UPDATER_BETA_URL`) default to
   the canonical R2 path layout
-  `https://updates.functionfly.app/vault/{channel}/{{target_version}}/{{current_version}}`
+  `https://updates.functionfly.app/vault/{channel}/manifest.json`
   so a vanilla binary still works once the R2 bucket is provisioned.
 - New IPC: `vault_check_update(channel)` returns
   `{ result: "up_to_date" }` or `{ result: "available", version,
@@ -101,25 +100,23 @@ notes, pub_date }`; `vault_apply_update(channel)` downloads,
 - **Release scripts** under `scripts/release/` (one-time per
   environment, then per release):
   - `load-updater-env.sh` — exports `VAULT_UPDATER_PUBKEY` +
-    `TAURI_SIGNING_PRIVATE_KEY_*` from
-    `<operator key dir>/vault-key{,.json,-password.txt}`; fail-closed
-    if any of those is missing.
+    `TAURI_SIGNING_PRIVATE_KEY_*` from `~/.tauri/vault-key{,.json,-password.txt}`;
+    fail-closed if any of those is missing.
   - `provision-r2-bucket.sh` — idempotent bucket create + versioning
     - lifecycle (30-day noncurrent expiry) + CORS + write/read/delete
       round-trip probe for `functionfly-vault-updates`.
-  - `publish-update.sh <channel> <version> <side-car> <sig>` — uploads
-    the side-car + .sig + `manifest.json` at the canonical
-    `vault/{channel}/{version}/…` layout; channels must be `stable` or
-    `beta`; version must be semver.
-  - `publish-update.test.sh` — 7-check smoke test (syntax, arg
-    parsing, channel/version validation, env pre-flight) plus an
-    8th **mock-R2 round-trip** check that boots the bundled
-    `scripts/release/mock-r2.py`, publishes a fixture side-car,
-    and asserts the three expected objects land in the mock store
-    at `vault/stable/{version}/...`. Gated on
-    `MOCK_R2_STORE=<path>` env var so the test stays inert in CI
-    environments without `python3` + `aws`. Wired into
-    `scripts/staging-smoke.sh` step 14.
+  - `publish-update.sh <channel> <version> <side-car> <sig> [target]` — uploads
+    the side-car + .sig and merges that platform's entry into the channel's
+    `manifest.json` at the canonical `vault/{channel}/{version}/…` layout;
+    channels must be `stable` or `beta`; version must be semver.
+  - `publish-update.test.sh` — smoke test covering arg parsing, the
+    updater manifest contract, and the artefact→manifest-target mapping,
+    plus an optional **mock-R2 round-trip** that boots the bundled
+    `scripts/release/mock-r2.py`, publishes a fixture side-car, and
+    asserts the three expected objects land in the mock store at
+    `vault/stable/{version}/…`. The round-trip is gated on
+    `MOCK_R2_STORE=<path>` + `python3` + `aws` so it stays inert in CI
+    environments without the AWS CLI.
   - `scripts/release/mock-r2.py` — stateful S3-compatible mock
     (~120 LoC) used by the smoke test above. Records every PUT
     under `$MOCK_R2_STORE/<bucket>/<key>` so the assertions can

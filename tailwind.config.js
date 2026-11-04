@@ -6,7 +6,11 @@ export default {
   // so a media-query strategy renders the app permanently light. `src/lib/theme.ts`
   // reads the theme from Tauri (`getCurrentWindow().theme()` +
   // `onThemeChanged`) and sets `class="dark"` on <html> instead.
-  darkMode: "class",
+  //
+  // In Tailwind v4 this strategy is declared in CSS, not here — see the
+  // `@custom-variant dark` directive in `src/styles.css`. The key is left
+  // out deliberately: v4 ignores it, and keeping it would suggest the
+  // behaviour is configured in this file when it is not.
   theme: {
     extend: {
       colors: {

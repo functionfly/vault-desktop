@@ -4,8 +4,8 @@ Cross-platform desktop client for the FunctionFly zero-knowledge secrets API.
 Built on Tauri v2 (Rust core + React webview) and packed into a single binary
 for Windows, macOS, and Linux.
 
-> **Status: 2026-10-06 — v0.1.0.**
-> Rust core: `cargo check` clean; 31/31 unit tests + 10/10 mockito integration tests passing. React bundle: `tsc` + `vite build` clean, 28/28 vitest. Signed auto-update (Phase 5) wired behind `VAULT_UPDATER_PUBKEY` (fail-closed when unset).
+> **Status: 2026-11-03 — v0.1.0.**
+> Rust core: `cargo clippy --all-targets -- -D warnings` clean; 34/34 unit tests + 10/10 mockito integration tests + 10/10 device-flow tests passing. React bundle: `tsc` + `vite build` clean, 58/58 vitest. Signed auto-update (Phase 5) wired behind `VAULT_UPDATER_PUBKEY` (fail-closed when unset).
 > No real-staging smoke yet — that requires a live orchestrator on a host
 > with a real OS keychain (the headless CI runner used for the build does not
 > have one), so the manual checklist at the end of this document is the
@@ -42,15 +42,17 @@ Rust core (Tauri v2 commands)
 ```
 
 A capability manifest (`src-tauri/capabilities/default.toml`) closes every
-default-on Tauri permission except `core:default`, `dialog`, `os`, `process`,
-and the explicitly listed `core:window:set-title` + `core:event`. The
-webview has no `fs:*`, no `shell:allow-execute`, no `http:*` — every network
-call is issued by the Rust core with the bearer attached server-side, so a
-compromised webview cannot exfiltrate tokens.
+default-on Tauri permission except `core:default`, the explicitly listed
+`core:window:set-title` + `core:window:allow-theme` + `core:event`, and
+`updater:default`. The webview has no `fs:*`, no `shell:allow-execute`, no
+`http:*` — every network call is issued by the Rust core with the bearer
+attached server-side, so a compromised webview cannot exfiltrate tokens.
 
 ## Build prerequisites
 
-- Rust ≥ 1.80 (`rustup install stable`).
+- Rust ≥ 1.90 (`rustup install stable`). The MSRV is 1.90 because the Tauri
+  v2 dependency graph declares it — not 1.80, which was declared until
+  2026-11-03 and never actually buildable.
 - Node 20+ and `bun` (the dashboard monorepo already pins these).
 - Tauri platform dependencies per the [Tauri v2 prerequisites](https://tauri.app/start/prerequisites/):
   - **Linux**: `libwebkit2gtk-4.1-dev`, `build-essential`, `libssl-dev`, `libgtk-3-dev`, `libayatana-appindicator3-dev`, `librsvg2-dev`.
@@ -62,11 +64,12 @@ compromised webview cannot exfiltrate tokens.
 ```bash
 cd vault-desktop
 bun install
-# In one terminal — the Vite dev server for the webview:
-bun run dev
-# In another — the Rust binary, which loads the Tauri config + the dev URL:
-cd src-tauri
-cargo run
+# The Tauri CLI is a devDependency — `bunx tauri dev` starts the Vite dev
+# server AND the Rust binary, and wires them together. Do NOT run
+# `bun run dev` + `cargo run` separately: the standalone `cargo run` does
+# not know the dev server's port, and the app comes up pointing at a URL
+# nothing is serving.
+bunx tauri dev
 ```
 
 ## Production build
@@ -75,8 +78,7 @@ cargo run
 cd vault-desktop
 bun install
 bun run build                      # tsc --noEmit && vite build
-cd src-tauri
-cargo tauri build                  # produces platform-specific bundles
+bunx tauri build                   # produces platform-specific bundles
 ```
 
 The output for the host OS lands under `src-tauri/target/release/bundle/`:
@@ -115,7 +117,7 @@ Nothing is tagged by hand — merge the release PR and release-please tags it.
 
 | Secret | Required | Purpose |
 | --- | --- | --- |
-| `RELEASE_PLEASE_TOKEN` | for automated releases | PAT with `contents: write` + `pull-requests: write`. The enterprise policy blocks `GITHUB_TOKEN` from creating PRs, so release-please cannot run without this. |
+| `RELEASE_PLEASE_TOKEN` | for automated releases | PAT with `contents: write` + `pull-requests: write`. The CI policy blocks `GITHUB_TOKEN` from creating PRs, so release-please cannot run without this. |
 | `TAURI_SIGNING_PRIVATE_KEY` | **yes** | Ed25519 updater signing. Absent → the release fails closed rather than shipping an unsigned artefact the updater would reject anyway. |
 | `TAURI_SIGNING_PRIVATE_KEY_PASSWORD` | **yes** | Passphrase for the above. |
 | `R2_ACCOUNT_ID`, `R2_ACCESS_KEY_ID`, `R2_SECRET_ACCESS_KEY`, `R2_BUCKET` | no | Publishes the updater manifest. When unset the installers still publish and the job logs how to run `publish-update.sh` by hand. |
@@ -123,11 +125,16 @@ Nothing is tagged by hand — merge the release PR and release-please tags it.
 
 ### Known gaps
 
-- **CodeQL does not currently run.** Code scanning needs Code Security, which
-  this private repo does not have under the org's enterprise policy. The
-  workflow probes for it and skips with a notice rather than sitting red.
+- **Static analysis does not currently gate merges.** Code scanning requires a
+  Code Security licence this repository's org does not hold. The workflow
+  probes for it and skips with a notice rather than sitting red, so it
+  re-enables itself the moment the licence is added.
 - **Automated changelog releases are blocked** for the same class of reason —
   see the manual procedure in [`docs/BRANCHING.md`](docs/BRANCHING.md).
+
+> Deployment specifics (bucket identifiers, key paths, owner handles, and the
+> org's CI policy constraints) are deliberately kept out of this document in
+> [`docs/INTERNAL.md`](docs/INTERNAL.md), which is not published.
 
 ### Local checks that mirror CI
 
@@ -143,6 +150,55 @@ cargo test --test orchestrator_mock
 cargo test --test device_flow
 cargo tauri build --no-bundle   # packaging suppressed; see ci.yml for why
 ```
+
+Or run the whole gate set in one command, exactly as CI runs it:
+
+```bash
+scripts/ci.sh                # every gate
+scripts/ci.sh --quick        # skip the slow Tauri compile
+scripts/ci.sh --job rust     # one job only
+scripts/ci.sh --report       # also publish a check run to the pull request
+```
+
+### Running CI outside GitHub Actions
+
+`scripts/ci.sh` runs the same gates as `.github/workflows/ci.yml` on any
+machine — a laptop, a VPS, WSL, or the container in
+`scripts/ci/Dockerfile`. It needs no GitHub account, no runner
+registration and no Actions minutes:
+
+```bash
+# Docker (reproducible, needs only a Docker daemon)
+docker build -f scripts/ci/Dockerfile -t vault-ci .
+docker run --rm -v "$PWD:/src" -w /src vault-ci
+
+# Or directly, on any machine with bun + cargo + python3
+scripts/ci.sh
+```
+
+Nothing in the gate set needs the GitHub Actions *runtime* — every step is
+a shell command. The only GitHub dependency is the REST API, and that
+works fine; `--report` publishes the outcome back to the pull request as
+a check run.
+
+The same applies to the release pipeline. `release-please` is a CLI
+(`npx release-please release-pr`), not an Action, and the signed builds
+are `tauri build` — so a release can be cut from any machine that holds
+the signing key:
+
+```bash
+npx release-please release-pr --repo-url=functionfly/vault-desktop \
+  --target-branch=main --config-file=release-please-config.json \
+  --manifest-file=.release-please-manifest.json
+```
+
+> **Current status (2026-11-03):** GitHub Actions is failing in the
+> `functionfly` organisation with `startup_failure` — the run is created
+> but no job ever starts, and there is no log. It affects every workflow
+> in every repository in the org, including a push of an unmodified
+> commit whose CI succeeded the week before, so it is not caused by
+> anything in this repository. `scripts/ci.sh` is the workaround until an
+> org admin restores it.
 
 ## Crypto interop guarantee
 
@@ -161,6 +217,20 @@ roundtrip, wrong passphrase, salt/IV uniqueness, legacy-v1 read, unknown
 key-version rejection, detached-tag normalization, AEAD tag tampering,
 missing salt, DEK wrap/unwrap, 32-byte DEK length guard, zeroize, and
 empty/Unicode/50KB plaintext roundtrip.
+
+## Tests
+
+| Suite                                        | Count | Command                                  |
+| -------------------------------------------- | ----- | ---------------------------------------- |
+| Rust unit tests                              | 34    | `cargo test --lib`                       |
+| Orchestrator mock (HTTP + CSRF contract)    | 10    | `cargo test --test orchestrator_mock`    |
+| Device-flow (RFC 8628 device grant)         | 10    | `cargo test --test device_flow`          |
+| Frontend IPC + theme contract                | 58    | `bunx vitest run`                        |
+| **Total**                                    | **112** | |
+
+The release tooling has its own suite — `bash scripts/release/publish-update.test.sh` —
+which asserts the updater manifest contract rather than merely checking that
+a manifest file exists.
 
 ## Auth & security
 
@@ -193,11 +263,15 @@ All commands are declared in `src-tauri/src/lib.rs` via
 | ---------------------------------------------- | ---------------------------------------------------------- | ------------------ |
 | `login`                                        | `{ user, desktop_capable }`                                | —                  |
 | `login_with_api_key`                           | same                                                       | —                  |
+| `begin_device_login`                           | `DeviceCodePrompt`                                         | —                  |
+| `await_device_login(input)`                    | `{ user, desktop_capable }`                                | —                  |
 | `restore_session`                              | `{ user?, refreshed, base_url? }`                          | —                  |
 | `logout`                                       | —                                                          | —                  |
 | `unlock_vault(passphrase)`                     | —                                                          | session            |
 | `lock_vault`                                   | —                                                          | session            |
 | `vault_status`                                 | `{ authenticated, unlocked, user? }`                       | —                  |
+| `vault_health_probe`                           | `{ reachable, latency_ms? }`                               | —                  |
+| `vault_store_info`                             | `{ backend, location? }`                                   | —                  |
 | `list_secrets(query)`                          | `{ secrets[], total }`                                     | session            |
 | `get_secret(id)`                               | `SecretResponse`                                           | session            |
 | `create_secret(input)`                         | `SecretResponse`                                           | session + unlocked |
@@ -227,11 +301,17 @@ The vault ships with a signed auto-update flow backed by
 `tauri-plugin-updater`. It mirrors the FunctionFly Studio Phase 5
 contract but with the vault-specific env-var names:
 
-| Env var                    | Required | Default                                                                               | Purpose                                                     |
-| -------------------------- | -------- | ------------------------------------------------------------------------------------- | ----------------------------------------------------------- |
-| `VAULT_UPDATER_PUBKEY`     | **yes**  | (unset → fail-closed)                                                                 | Ed25519 public key (PEM) printed by `tauri signer generate` |
-| `VAULT_UPDATER_STABLE_URL` | no       | `https://updates.functionfly.app/vault/stable/{{target_version}}/{{current_version}}` | Stable-channel update manifest endpoint                     |
-| `VAULT_UPDATER_BETA_URL`   | no       | `https://updates.functionfly.app/vault/beta/{{target_version}}/{{current_version}}`   | Beta-channel update manifest endpoint                       |
+| Env var                    | Required | Default                                                                    | Purpose                                                      |
+| -------------------------- | -------- | -------------------------------------------------------------------------- | ------------------------------------------------------------ |
+| `VAULT_UPDATER_PUBKEY`     | **yes**  | (unset → fail-closed)                                                      | Ed25519 public key (PEM) printed by `tauri signer generate` |
+| `VAULT_UPDATER_STABLE_URL` | no       | `https://updates.functionfly.app/vault/stable/manifest.json`              | Stable-channel update manifest endpoint                      |
+| `VAULT_UPDATER_BETA_URL`   | no       | `https://updates.functionfly.app/vault/beta/manifest.json`                | Beta-channel update manifest endpoint                        |
+
+> **The endpoint is the channel's static manifest.** It carries no version
+> placeholder. `tauri-plugin-updater` substitutes only `{{current_version}}`,
+> `{{target}}`, `{{arch}}` and `{{bundle_type}}` — there is no
+> `{{target_version}}` token, and a URL containing one is requested
+> verbatim and 404s.
 
 **Fail-closed contract.** Every `vault_check_update` and
 `vault_apply_update` call reads the config from the process env at
@@ -241,15 +321,31 @@ manifest, the webview surfaces the code in a typed error envelope,
 and a blank per-channel URL raises `invalid_endpoint`. There is no
 fallback to an unsigned update.
 
+> **Do not delete the `plugins.updater` block from `tauri.conf.json`.**
+> It looks like dead config because `commands/updater.rs` overrides the
+> pubkey and endpoints at runtime — but the plugin's `Config` struct has a
+> `pubkey: String` field with no serde default, so an absent section
+> deserialises as `null` and the app **panics on startup**:
+>
+> ```
+> PluginInitialization("updater", "Error deserializing 'plugins.updater' within
+> your Tauri configuration: invalid type: null, expected struct Config")
+> ```
+>
+> The empty `pubkey` / `endpoints` values are intentional placeholders.
+> They are safe: `verify_signature` calls `PublicKey::decode(..)?`, so an
+> empty key returns an error — it can never silently skip verification.
+> Verified that `bunx tauri build --no-bundle` (what CI runs) exits 0 both
+> with and without this block, so keeping it does not require a signing key.
+
 **Operator-side release flow** (the canonical contract is mirrored
 in `src-tauri/src/updater.rs`). Three shell scripts ship in
 `scripts/release/` to make the build-host side reproducible and
 fail-closed:
 
 ```bash
-# Once per build host — generates <operator key dir>/vault-key{,.json}
-cargo-tauri signer generate -w <operator key dir>/vault-key.json
-# (64-char password saved to <operator key dir>/vault-key-password.txt)
+# Once per build host — generates the signing keypair under $VAULT_KEY_DIR
+cargo-tauri signer generate -w "$VAULT_KEY_DIR/vault-key.json"
 
 # Once per environment (staging + production) — provisions the R2 bucket
 R2_ACCOUNT_ID=… R2_ACCESS_KEY_ID=… R2_SECRET_ACCESS_KEY=… \
@@ -257,18 +353,34 @@ R2_ACCOUNT_ID=… R2_ACCESS_KEY_ID=… R2_SECRET_ACCESS_KEY=… \
 
 # Every release — load env, build, publish
 source ./scripts/release/load-updater-env.sh
-cargo tauri build   # produces both installer + side-car with .sig
-./scripts/release/publish-update.sh stable 0.1.1 \
-  target/release/bundle/appimage/functionfly-vault-desktop_0.1.1_amd64.AppImage.tar.gz \
-  target/release/bundle/appimage/functionfly-vault-desktop_0.1.1_amd64.AppImage.tar.gz.sig
+bunx tauri build   # produces installer + side-car + .sig
+# Publish every artefact in a directory, one manifest for all platforms:
+./scripts/release/publish-updater-assets.sh stable 0.1.1 ./sidecars
 ```
 
-| Script                                                   | Idempotent?                     | Touches R2?                              | What it does                                                                                                                                                                                                                                        |
-| -------------------------------------------------------- | ------------------------------- | ---------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `load-updater-env.sh`                                    | yes                             | no                                       | Exports `VAULT_UPDATER_PUBKEY`, `TAURI_SIGNING_PRIVATE_KEY_*`; prints a redacted manifest to stderr                                                                                                                                                 |
-| `provision-r2-bucket.sh`                                 | yes                             | yes                                      | Creates `functionfly-vault-updates`, enables versioning, applies the noncurrent-version lifecycle rule, sets CORS, runs a write+read+delete round-trip probe                                                                                        |
-| `publish-update.sh <channel> <version> <side-car> <sig>` | no (idempotent at the S3 level) | yes                                      | Uploads the side-car + signature + `manifest.json` for the given channel                                                                                                                                                                            |
-| `publish-update.test.sh`                                 | yes                             | no (or yes, when `MOCK_R2_STORE` is set) | 7-check arg-parsing smoke + 8th end-to-end round-trip via the bundled `mock-r2.py` (gated on `MOCK_R2_STORE` + `python3` + `aws` being on PATH; otherwise inert). Captured evidence at `scripts/release/evidence/2026-10-06-mock-r2-round-trip.md`. |
+The manifest is the contract `tauri-plugin-updater` reads. Three properties
+are load-bearing, and each one has broken a release in the past:
+
+| Property          | Value                                                                  | Why                                                                                       |
+| ----------------- | ---------------------------------------------------------------------- | ----------------------------------------------------------------------------------------- |
+| `platforms` keys  | `{os}-{arch}` and `{os}-{arch}-{installer}`                            | The plugin looks up exactly these. A Rust target triple (`x86_64-unknown-linux-gnu`) is never found. |
+| `signature`       | The **content** of the `.sig` file (base64 minisign signature)          | The plugin base64-decodes this field and minisign-verifies the download against it. A URL here fails verification at install time. |
+| `notes`           | A JSON string                                                          | The manifest is parsed as JSON. Shell-quoting the notes produces a document no client can parse. |
+
+The installer format is part of the key because a `.deb` user must be offered
+the `.deb` archive, not the AppImage that shares its architecture.
+`scripts/release/updater-targets.py` owns that mapping and is asserted by the
+release test suite.
+
+| Script                                                    | Idempotent?                      | Touches R2?                              | What it does                                                                                                                                                                                                                     |
+| --------------------------------------------------------- | -------------------------------- | ---------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `load-updater-env.sh`                                     | yes                              | no                                       | Exports `VAULT_UPDATER_PUBKEY`, `TAURI_SIGNING_PRIVATE_KEY_*`; prints a redacted manifest to stderr                                                                                                                              |
+| `provision-r2-bucket.sh`                                  | yes                              | yes                                      | Creates the updater bucket, enables versioning, applies the noncurrent-version lifecycle rule, sets CORS, runs a write+read+delete round-trip probe                                                                                  |
+| `publish-update.sh <channel> <version> <side-car> <sig> [target]` | no (idempotent at the S3 level) | yes                                      | Uploads the side-car + signature and merges that platform's entry into `vault/<channel>/manifest.json`. Accepts a comma-separated target list for a multi-arch archive. |
+| `publish-updater-assets.sh <channel> <version> <dir>`    | no                               | yes                                      | Publishes every updater artefact in a directory, building one manifest across all platforms.                                                                                                                                    |
+| `render-manifest.py`                                      | yes                              | no                                       | The manifest contract, in one place. Emits valid JSON; refuses a target triple, a non-base64 signature, or a repointed platform.                                                                                                    |
+| `updater-targets.py`                                      | yes                              | no                                       | Maps an artefact filename to the manifest target keys the plugin looks up.                                                                                                                                                        |
+| `publish-update.test.sh`                                  | yes                              | no (or yes, when `MOCK_R2_STORE` is set) | Arg-parsing smoke + the manifest contract assertions + the artefact→target mapping. The mock-R2 round-trip needs `python3` + `aws` and is otherwise inert.                                                |
 
 Existing installs pick up the new manifest on their next
 `vault_check_update(channel)` call (the user clicks **Check for
@@ -283,10 +395,14 @@ client does not need same-day insider builds.
 
 ## Env / config
 
-There are no operator-facing env vars in v0.1.0. The orchestrator URL is
-asked of the user at login and persisted in the keychain alongside the
-tokens. Per-build settings (window title, identifier, icon) live in
-`src-tauri/tauri.conf.json`.
+The orchestrator URL is asked of the user at login and persisted in the
+keychain alongside the tokens. Per-build settings (window title, identifier,
+icon) live in `src-tauri/tauri.conf.json`.
+
+The updater reads its configuration from the process environment at call
+time — see [Updater (signed auto-update)](#updater-signed-auto-update) for
+the full list. `VAULT_ORCHESTRATOR_URL` optionally seeds the login screen's
+default orchestrator URL; it is a convenience, not a requirement.
 
 ### Brand mark / icons
 

@@ -9,13 +9,20 @@ enforcement of it.
 | Branch | Lifetime | Contains | Merges into |
 | --- | --- | --- | --- |
 | `main` | permanent | Released, tagged code only. Never has unreleased commits. | — |
-| `develop` | permanent | Everything accepted so far that is not yet released. Always releasable. | `main` via the release PR |
+| `develop` | permanent | Everything accepted so far that is not yet released. Always releasable. | `main` via a promotion PR |
 | `feature/<name>` | short | One change. Branched from `develop`. | `develop` |
 | `fix/<name>` | short | One bug fix. Branched from `develop`. | `develop` |
 | `hotfix/<name>` | short | A production fix. Branched from `main`, not `develop`. | `main`, then back into `develop` |
+| `promote/<name>` | short | A promotion of `develop` into `main`. Branched from `develop`. | `main` |
 
 Allowed topic prefixes: `feature/`, `fix/`, `chore/`, `refactor/`, `perf/`,
-`docs/`, `test/`, `ci/`, `build/`, `dependabot/`.
+`docs/`, `test/`, `ci/`, `build/`, `dependabot/`, `promote/`.
+
+`promote/` is the one prefix that targets `main` without being a release.
+It exists because **release-please scans `target-branch`'s commit history**,
+and `target-branch` is `main`. A commit therefore only becomes releasable
+once it has been promoted into `main`. Without a promotion step the release
+PR would never contain the work it is supposed to release.
 
 ## Why there is a `develop` branch at all
 
@@ -57,21 +64,27 @@ so a docs-only PR produces no release. That is intended.
 Nothing is tagged by hand.
 
 1. Merge your topic PR into `develop`.
-2. release-please evaluates every commit since the last `v*` tag. If any of
-   them warrant a SemVer bump it opens **"chore(release): vX.Y.Z"** into
-   `main`, having bumped:
+2. Promote `develop` into `main` with a `promote/*` PR. This is the step
+   that makes the work visible to release-please: with `target-branch:
+   main`, release-please scans **main's** commit history, so a commit that
+   is still only on `develop` is not in any release.
+3. release-please evaluates every commit on `main` since the last `v*`
+   tag. If any of them warrant a SemVer bump it opens **"chore(release):
+   vX.Y.Z"** into `main`, having bumped:
    - `CHANGELOG.md`
    - `package.json` (`$.version`)
    - `src-tauri/Cargo.toml` (`$.package.version`)
    - `src-tauri/tauri.conf.json` (`$.version`)
-3. Review that PR. It is the changelog users will read, so this is where a
+   All four rules live in `release-please-config.json`.
+4. Review that PR. It is the changelog users will read, so this is where a
    mislabelled `feat` gets caught — a `feat` that ships as a `patch` under-
    reports a breaking change.
-4. Merge it. release-please tags the merge commit `vX.Y.Z`.
-5. That tag triggers `release.yml`: version verification, signed builds on
-   Linux/macOS/Windows, and a draft GitHub Release with the CHANGELOG section
-   as its notes.
-6. **Review the draft and publish it.** It stays a draft on purpose.
+5. Merge it. release-please creates the `vX.Y.Z` tag and a **draft**
+   GitHub Release. The tag is what triggers `release.yml`.
+6. `release.yml` verifies the tag against every version source, builds +
+   signs installers on Linux/macOS/Windows, and uploads them into the
+   draft release.
+7. **Review the draft and publish it.** It stays a draft on purpose.
 
 ### One-time setup still outstanding
 
@@ -84,6 +97,25 @@ The automated path does not run today. Two blockers, both environmental:
 
 Both are repository/secret operations rather than code changes, which is why
 they are not automated. Until then use the manual procedure below.
+
+> **Bootstrapping `main` safely.** `branch-flow.yml` permits a
+> `release-please--*` branch, a `promote/*` branch, or a `hotfix/*` branch
+> to target `main`, and release-please cannot open its PR until the config
+> is already on `main`. The way out is a `hotfix/*` branch cut from `main`
+> that adds the two config files, merged through the normal PR flow.
+> `hotfix/*` → `main` is explicitly permitted by the branch-flow workflow.
+>
+> Note that a promotion PR and the release PR are two different PRs: the
+> promotion carries the *code*, the release PR carries the *version bump
+> and the changelog*.
+
+> **Why `skip-github-release` was removed.** The config used to set
+> `"skip-github-release": true`. That option makes release-please skip
+> creating the release entirely — including the git tag — which means
+> `release.yml` (triggered by the `v*` tag push) never fires. The config
+> now sets `"draft": true` and `"force-tag-creation": true` instead:
+> release-please creates the tag explicitly and leaves the GitHub Release
+> as a draft for human review.
 
 ## Hotfixes
 
@@ -109,18 +141,35 @@ The workflow posts a reminder into the job summary when a hotfix is merged.
 
 ## Branch protection
 
-These rules are **already applied** to `main` and `develop` via the GitHub API.
-Re-applying them (or changing them) needs a token with `administration: write`.
-
-> The check names below must match the job names in the workflow files
-> character-for-character. A required check that never matches a real job is
-> accepted silently by the API and simply never blocks anything, so a typo
-> weakens the gate without any error. Verify after any rename:
+> **These rules are NOT currently applied.** The repository is private and
+> the owning organisation is on GitHub's free plan, and the branch
+> protection API returns `403 Forbidden` for it:
 >
-> ```bash
-> gh api repos/functionfly/vault-desktop/branches/main/protection \
->   --jq '.required_status_checks.contexts'
 > ```
+> $ gh api repos/functionfly/vault-desktop/branches/main/protection
+> HTTP 403: Resource not accessible by integration
+> ```
+>
+> Rulesets are unavailable for the same reason. The table below is the
+> **intent** — apply it verbatim when the plan allows it. Until then, the
+> only enforcement is [`branch-flow.yml`](../.github/workflows/branch-flow.yml),
+> which checks the head→base pairing and the Conventional Commit title on
+> every pull request. It does **not** prevent a direct push to `main` or
+> `develop`.
+>
+> Re-applying the rules (or changing them) needs a token with
+> `administration: write` **and** an org plan that permits branch
+> protection on a private repository.
+
+The check names below must match the job names in the workflow files
+character-for-character. A required check that never matches a real job is
+accepted silently by the API and simply never blocks anything, so a typo
+weakens the gate without any error. Verify after any rename:
+
+```bash
+gh api repos/functionfly/vault-desktop/branches/main/protection \
+  --jq '.required_status_checks.contexts'
+```
 
 ### `main`
 

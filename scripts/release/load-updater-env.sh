@@ -11,7 +11,7 @@
 #   4. `publish-update.sh`               ← run on every release
 #
 # Layout assumptions (override with the env vars at the top):
-#   - Private key + password:    <operator key dir>/vault-key{,.json}
+#   - Private key + password:    $VAULT_KEY_DIR/vault-key{,.json}
 #   - Public key (this file):    $VAULT_KEY_DIR/vault-key.json.pub
 #   - Build cwd:                 $VAULT_DESKTOP_DIR  (this repo's root)
 #
@@ -25,7 +25,7 @@
 set -euo pipefail
 
 # ── Configurable inputs ───────────────────────────────────────────────
-: "${VAULT_KEY_DIR:=<operator key dir>}"
+: "${VAULT_KEY_DIR:=$HOME/.tauri}"
 # Default to this script's own repo root (scripts/release -> ../..) so the
 # path stays correct wherever the repo is cloned. Sourced from either bash or
 # zsh: bash sets BASH_SOURCE[0] but leaves $0 as the shell name, while zsh
@@ -33,8 +33,13 @@ set -euo pipefail
 : "${VAULT_DESKTOP_DIR:=$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")/../.." && pwd)}"
 : "${VAULT_KEY_PASSWORD_FILE:=$VAULT_KEY_DIR/vault-key-password.txt}"
 : "${VAULT_PUBKEY_FILE:=$VAULT_KEY_DIR/vault-key.json.pub}"
-: "${VAULT_UPDATER_STABLE_URL:=https://updates.functionfly.app/vault/stable/{{target_version}}/{{current_version}}}"
-: "${VAULT_UPDATER_BETA_URL:=https://updates.functionfly.app/vault/beta/{{target_version}}/{{current_version}}}"
+# The endpoint is the channel's static manifest. `tauri-plugin-updater`
+# only substitutes `{{current_version}}`, `{{target}}`, `{{arch}}` and
+# `{{bundle_type}}` — there is no `{{target_version}}` placeholder, and
+# the previous default left that token in the request URL verbatim,
+# which no object in the bucket could ever satisfy.
+: "${VAULT_UPDATER_STABLE_URL:=https://updates.functionfly.app/vault/stable/manifest.json}"
+: "${VAULT_UPDATER_BETA_URL:=https://updates.functionfly.app/vault/beta/manifest.json}"
 
 # ── Pre-flight checks (fail closed with a clear message) ──────────────
 for f in "$VAULT_KEY_DIR/vault-key.json" "$VAULT_PUBKEY_FILE" "$VAULT_KEY_PASSWORD_FILE"; do

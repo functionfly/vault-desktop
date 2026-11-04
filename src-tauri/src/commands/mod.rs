@@ -26,6 +26,12 @@ pub struct AppState {
     pub store: Arc<SecretStore>,
 }
 
+impl Default for AppState {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl AppState {
     pub fn new() -> Self {
         let client = Arc::new(VaultClient::new());
@@ -1133,10 +1139,8 @@ async fn encrypt_field(
                 })
         })
         .await;
-    let inner = inner?;
-    inner
+    inner?
 }
-
 fn login_user_stub(_session: &StoredSession) -> LoginUser {
     // `StoredSession` does not include the user blob — that was rendered into
     // the dashboard from the login response. This is the session-restore

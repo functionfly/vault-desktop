@@ -8,7 +8,7 @@
 # This asserts the LOADER's contract, not the presence of any particular
 # signing key. It previously sourced the loader with no VAULT_KEY_DIR
 # override, which silently depended on load-updater-env.sh's default of
-# <operator key dir>. That passed on the author's machine and failed on
+# $HOME/.tauri. That passed on the author's machine and failed on
 # every CI runner with:
 #
 #   x load-updater-env.sh loads env (round-trip ok) (expected exit=0, got 1)

@@ -57,7 +57,19 @@ on:
     # file (the run fails in 0s with "workflow file issue" and creates no
     # jobs). Negate the release PR branch inside `branches` instead; `**` is
     # used because `*` does not match `/`.
+    #
+    # `main` is the release branch: release-please opens its "chore(release):
+    # vX.Y.Z" PR against `main`, and the tag is created when that PR is
+    # merged. The workflow therefore has to run on a push to `main` -- if it
+    # only ran on `develop`, the tag would never be created and `release.yml`
+    # (which triggers on the `v*` tag push) would never fire.
+    #
+    # `develop` is included so that a push there also refreshes the release
+    # PR. It is not the source of truth for what ships: `target-branch:
+    # main` means release-please scans `main`'s commit history, so a commit
+    # only enters a release once it has been promoted into `main`.
     branches:
+      - main
       - develop
       - "!release-please--**"
 
@@ -154,5 +166,9 @@ jobs:
             else
               echo "Nothing to release. Commits since the last tag were"
               echo "docs/chore/ci/test only, which do not move the version."
+              echo ""
+              echo "If a release IS expected, check that the changes have been"
+              echo "promoted into main -- release-please scans main's history,"
+              echo "not develop's."
             fi
           } >> "$GITHUB_STEP_SUMMARY"

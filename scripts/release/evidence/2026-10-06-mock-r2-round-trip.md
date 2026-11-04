@@ -1,11 +1,15 @@
 # Mock R2 round-trip — 2026-10-06
 
+> **Redacted for publication.** The real account ID, bucket name, and key
+> fingerprints live in [`docs/INTERNAL.md`](../../docs/INTERNAL.md). The mock
+> credentials below are deliberately fake and were never valid.
+
 This is the end-to-end evidence that the three operator follow-up
 scripts work end-to-end against an S3-compatible endpoint. The
 target is a stateful Python mock at `127.0.0.1:18234`; running
-this against the real `functionfly-vault-updates` bucket only
+this against the real bucket only
 requires swapping `R2_ENDPOINT_OVERRIDE` for the canonical
-`https://<R2 account id — see the private runbook>.r2.cloudflarestorage.com`
+`https://<account-id>.r2.cloudflarestorage.com`
 URL and supplying real R2 credentials.
 
 ## Reproduce
@@ -18,14 +22,14 @@ MOCK_R2_STORE=/tmp/mock-r2-store python3 scripts/release/../mock-r2.py 18234 &
 source scripts/release/load-updater-env.sh
 
 # 3. Provision the bucket.
-R2_ACCOUNT_ID=<R2 account id — see the private runbook> \
+R2_ACCOUNT_ID=<32 hex account id> \
 R2_ACCESS_KEY_ID=FAKEFAKEFAKEFAKEFAKEFAKEFAKEFAKEFAKEFAKEFAKE \
 R2_SECRET_ACCESS_KEY=fakefakesecret_secret_secret_secret_secret_secret_see \
 R2_ENDPOINT_OVERRIDE=http://127.0.0.1:18234 \
     scripts/release/provision-r2-bucket.sh
 
 # 4. Publish an update to the stable channel.
-R2_ACCOUNT_ID=<R2 account id — see the private runbook> \
+R2_ACCOUNT_ID=<32 hex account id> \
 R2_ACCESS_KEY_ID=FAKEFAKEFAKEFAKEFAKEFAKEFAKEFAKEFAKEFAKEFAKE \
 R2_SECRET_ACCESS_KEY=fakefakesecret_secret_secret_secret_secret_secret_see \
 R2_ENDPOINT_OVERRIDE=http://127.0.0.1:18234 \
@@ -34,7 +38,7 @@ R2_ENDPOINT_OVERRIDE=http://127.0.0.1:18234 \
         fixtures/functionfly-vault-desktop_0.1.1_amd64.AppImage.tar.gz.sig
 
 # 5. Publish a pre-release to the beta channel.
-R2_ACCOUNT_ID=<R2 account id — see the private runbook> \
+R2_ACCOUNT_ID=<32 hex account id> \
 R2_ACCESS_KEY_ID=FAKEFAKEFAKEFAKEFAKEFAKEFAKEFAKEFAKEFAKEFAKE \
 R2_SECRET_ACCESS_KEY=fakefakesecret_secret_secret_secret_secret_secret_see \
 R2_ENDPOINT_OVERRIDE=http://127.0.0.1:18234 \
@@ -104,6 +108,13 @@ URLs differ, and the bucket now holds two channels' worth of
 versioned side-cars.
 
 ## Stored manifests (read back from the mock)
+
+> **Superseded on 2026-11-03.** The transcripts below are kept as a record
+> of what was run on 2026-10-06. The manifests they show were *not* valid
+> updater manifests: the `platforms` key was a Rust target triple the
+> plugin never looks up, and `signature` held a URL instead of the
+> signature content. The current schema is in
+> [`../README.md`](../README.md#tauri-updater-schema).
 
 ### `vault/stable/manifest.json`
 

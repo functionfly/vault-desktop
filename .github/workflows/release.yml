@@ -260,14 +260,27 @@ jobs:
         run: |
           set -euo pipefail
 
-          if ! gh release view "$TAG" >/dev/null 2>&1; then
-            echo "::error::No release found for ${TAG}; the build job did not create one."
+          # A DRAFT release is not addressable by tag: `GET /releases/tags/{tag}`
+          # returns 404 for drafts, so `gh release view "$TAG"` and
+          # `gh release edit "$TAG"` both fail. The draft has to be found in
+          # the full release list and patched by id.
+          #
+          # release-please creates the draft (config `draft: true`) together
+          # with the tag (`force-tag-creation: true`), and tauri-action in
+          # the build job above uploads the installers into that same draft.
+          RELEASE_ID="$(gh api "repos/${GITHUB_REPOSITORY}/releases" --paginate \
+            --jq "map(select(.tag_name == \"${TAG}\")) | .[0].id // empty")"
+
+          if [ -z "$RELEASE_ID" ]; then
+            echo "::error::No release found for ${TAG} (including drafts); the build job did not create one."
             exit 1
           fi
 
-          gh release edit "$TAG" \
-            --title "FunctionFly Vault ${VERSION}" \
-            --notes-file release-notes.md
+          gh api "repos/${GITHUB_REPOSITORY}/releases/${RELEASE_ID}" \
+            --method PATCH \
+            --field "name=FunctionFly Vault ${VERSION}" \
+            --field "body@release-notes.md" \
+            --field "draft=true" >/dev/null
 
           echo "Release ${TAG} updated with CHANGELOG notes."
           echo ""
@@ -289,9 +302,11 @@ jobs:
           ACCOUNT_ID: ${{ secrets.R2_ACCOUNT_ID }}
           ACCESS_KEY: ${{ secrets.R2_ACCESS_KEY_ID }}
           SECRET_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
-          BUCKET: ${{ secrets.R2_BUCKET }}
         run: |
-          if [ -z "$ACCOUNT_ID" ] || [ -z "$ACCESS_KEY" ] || [ -z "$SECRET_KEY" ] || [ -z "$BUCKET" ]; then
+          # The bucket name is not a secret — it is pinned in
+          # scripts/release/README.md — so only the three credentials are
+          # required here.
+          if [ -z "$ACCOUNT_ID" ] || [ -z "$ACCESS_KEY" ] || [ -z "$SECRET_KEY" ]; then
             echo "r2_configured=false" >> "$GITHUB_OUTPUT"
             echo "::notice::R2 secrets are not provisioned; skipping the updater manifest publish."
             echo "Installers are still published. Existing clients will not see this version until"
@@ -304,36 +319,80 @@ jobs:
       # job with an explicit guard so a missing credential never fails an
       # otherwise-good release, but never silently publishes a partial
       # manifest either.
+      - name: Install the AWS CLI
+        if: steps.creds.outputs.r2_configured == 'true'
+        shell: bash
+        # The `awscli` apt package has no installation candidate on the
+        # ubuntu-24.04 runner image:
+        #   E: Package 'awscli' has no installation candidate
+        # R2 is S3-compatible, so the v2 CLI is installed from the
+        # official bundle instead.
+        run: |
+          set -euo pipefail
+          curl -fsSL -o awscliv2.zip https://awscli.amazonaws.com/awscli-exe-linux-x86_64.zip
+          unzip -q awscliv2.zip
+          ./aws/install --update
+          aws --version
+
+      - name: Download the signed updater assets
+        if: steps.creds.outputs.r2_configured == 'true'
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ needs.verify.outputs.tag }}
+        run: |
+          set -euo pipefail
+
+          # The release is tagged `vX.Y.Z` and `gh release download` needs
+          # that tag — downloading by the bare version finds nothing,
+          # because no release carries a tag called `0.1.1`.
+          #
+          # The updater artefacts are a `.tar.gz` on Linux and macOS and a
+          # `.zip` on Windows. The installers themselves (`.AppImage`,
+          # `.deb`, `.rpm`, `.dmg`, `.msi`, `.exe`) are served from the
+          # GitHub release and are deliberately not matched here.
+          mkdir -p ./sidecars
+          gh release download "$TAG" \
+            --repo "$GITHUB_REPOSITORY" \
+            --pattern '*.tar.gz' \
+            --pattern '*.tar.gz.sig' \
+            --pattern '*.nsis.zip' \
+            --pattern '*.nsis.zip.sig' \
+            --pattern '*.msi.zip' \
+            --pattern '*.msi.zip.sig' \
+            --dir ./sidecars
+
+          echo "Downloaded updater assets:"
+          ls -l ./sidecars
+
       - name: Upload side-cars + manifest
         if: steps.creds.outputs.r2_configured == 'true'
         shell: bash
         env:
           VERSION: ${{ needs.verify.outputs.version }}
+          TAG: ${{ needs.verify.outputs.tag }}
+          CHANNEL: ${{ vars.UPDATER_CHANNEL || 'stable' }}
           R2_ACCOUNT_ID: ${{ secrets.R2_ACCOUNT_ID }}
           R2_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
           R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
-          R2_BUCKET: ${{ secrets.R2_BUCKET }}
+          R2_BUCKET: ${{ secrets.R2_BUCKET || 'functionfly-vault-updates' }}
         run: |
           set -euo pipefail
 
-          # Download the signed side-cars produced by tauri-action in the
-          # build matrix. Only the updater side-car + its .sig are needed —
-          # the installers themselves are served from the GitHub release.
-          gh release download "$VERSION" \
-            --repo "$GITHUB_REPOSITORY" \
-            --pattern '*.tar.gz' --pattern '*.tar.gz.sig' \
-            --dir ./sidecars || true
+          # The manifest's `notes` field carries this release's changelog
+          # section, exactly as the GitHub release notes do.
+          NOTES="$(awk -v v="$VERSION" '
+            $0 ~ "^## \\[" v "\\]" { grab=1; next }
+            grab && /^## / { exit }
+            grab { print }
+          ' CHANGELOG.md)"
+          export NOTES
 
-          mapfile -t SIDECARS < <(find ./sidecars -name '*.tar.gz' ! -name '*.sig' | sort)
-          if [ "${#SIDECARS[@]}" -eq 0 ]; then
-            echo "::error::No updater side-cars found on the release; cannot publish a manifest."
-            exit 1
-          fi
+          # One call per artefact. Each call publishes that artefact
+          # under the manifest target keys the plugin looks up and
+          # merges the entry into the channel manifest, so the three
+          # platform legs build up a single manifest.
+          ./scripts/release/publish-updater-assets.sh "$CHANNEL" "$VERSION" ./sidecars
 
-          for sidecar in "${SIDECARS[@]}"; do
-            sig="${sidecar}.sig"
-            [ -f "$sig" ] || { echo "::error::Missing signature ${sig}"; exit 1; }
-            ./scripts/release/publish-update.sh stable "$VERSION" "$sidecar" "$sig"
-          done
-
-          echo "Updater manifest published for stable/${VERSION}."
+          echo "Updater manifest published for ${CHANNEL}/${VERSION}."
+          echo "Fetch it from: https://updates.functionfly.app/vault/${CHANNEL}/manifest.json"

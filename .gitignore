@@ -40,5 +40,12 @@ coverage/
 *.lcov
 Cargo.target.parallel-incremental
 
+# Python bytecode caches. The release helpers under scripts/release/ are
+# Python, so importing them (or `py_compile`-ing them in the CI gate
+# set) writes a __pycache__ next to the source. Those are build
+# artefacts, not source.
+__pycache__/
+*.py[cod]
+
 # macOS junk
 *.dmg.tmp
