@@ -220,6 +220,21 @@ job_release_scripts() {
     bash scripts/check-no-internal-leaks.sh
   run_step release-scripts "publish-update.sh self-tests" \
     bash scripts/release/publish-update.test.sh
+
+  # The updater's verification key lives in tauri.conf.json while the
+  # release artefacts are signed with TAURI_SIGNING_PRIVATE_KEY. If
+  # those two drift apart the release still builds and every update
+  # fails verification on a user's machine. The script checks the
+  # keynum; without a signing key it still asserts the configured
+  # pubkey is present and well-formed.
+  run_step release-scripts "updater keypair matches the configured pubkey" \
+    bash scripts/release/verify-updater-keypair.sh
+
+  # The updater config contract: the pubkey must be present and
+  # parseable, otherwise the shipped app cannot verify updates and the
+  # Tauri CLI cannot sign the updater artefacts.
+  run_step release-scripts "updater config contract" \
+    bash -c 'cd src-tauri && cargo test --test updater_config'
 }
 
 # ── Parity check against ci.yml ─────────────────────────────────────────
@@ -239,9 +254,11 @@ job_check_parity() {
         "cargo test --lib" \
         "cargo test --test orchestrator_mock" \
         "cargo test --test device_flow" \
+        "cargo test --test updater_config" \
         "bunx tauri build --no-bundle" \
         "scripts/check-no-internal-leaks.sh" \
-        "scripts/release/publish-update.test.sh"; do
+        "scripts/release/publish-update.test.sh" \
+        "scripts/release/verify-updater-keypair.sh"; do
         if ! grep -qF "$probe" "$yml"; then
           echo "::error::${probe} is not in ${yml} but the portable runner runs it."
           missing=1

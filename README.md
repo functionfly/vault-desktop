@@ -5,7 +5,7 @@ Built on Tauri v2 (Rust core + React webview) and packed into a single binary
 for Windows, macOS, and Linux.
 
 > **Status: 2026-11-03 — v0.1.0.**
-> Rust core: `cargo clippy --all-targets -- -D warnings` clean; 34/34 unit tests + 10/10 mockito integration tests + 10/10 device-flow tests passing. React bundle: `tsc` + `vite build` clean, 58/58 vitest. Signed auto-update (Phase 5) wired behind `VAULT_UPDATER_PUBKEY` (fail-closed when unset).
+> Rust core: `cargo clippy --all-targets -- -D warnings` clean; 52/52 unit tests + 19/19 mockito integration tests + 10/10 device-flow tests + 4/4 updater-config contract tests passing. React bundle: `tsc` + `vite build` clean, 58/58 vitest. Signed auto-update (Phase 5) is wired with the Ed25519 public key compiled into the binary, so an installed client can verify updates without any environment variable.
 > No real-staging smoke yet — that requires a live orchestrator on a host
 > with a real OS keychain (the headless CI runner used for the build does not
 > have one), so the manual checklist at the end of this document is the
@@ -148,6 +148,7 @@ cargo clippy --all-targets
 cargo test --lib
 cargo test --test orchestrator_mock
 cargo test --test device_flow
+cargo test --test updater_config
 cargo tauri build --no-bundle   # packaging suppressed; see ci.yml for why
 ```
 
@@ -222,11 +223,12 @@ empty/Unicode/50KB plaintext roundtrip.
 
 | Suite                                        | Count | Command                                  |
 | -------------------------------------------- | ----- | ---------------------------------------- |
-| Rust unit tests                              | 34    | `cargo test --lib`                       |
-| Orchestrator mock (HTTP + CSRF contract)    | 10    | `cargo test --test orchestrator_mock`    |
+| Rust unit tests                              | 52    | `cargo test --lib`                       |
+| Orchestrator mock (HTTP + CSRF contract)    | 19    | `cargo test --test orchestrator_mock`    |
 | Device-flow (RFC 8628 device grant)         | 10    | `cargo test --test device_flow`          |
+| Updater config contract                      | 4     | `cargo test --test updater_config`       |
 | Frontend IPC + theme contract                | 58    | `bunx vitest run`                        |
-| **Total**                                    | **112** | |
+| **Total**                                    | **143** | |
 
 The release tooling has its own suite — `bash scripts/release/publish-update.test.sh` —
 which asserts the updater manifest contract rather than merely checking that
@@ -303,7 +305,7 @@ contract but with the vault-specific env-var names:
 
 | Env var                    | Required | Default                                                                    | Purpose                                                      |
 | -------------------------- | -------- | -------------------------------------------------------------------------- | ------------------------------------------------------------ |
-| `VAULT_UPDATER_PUBKEY`     | **yes**  | (unset → fail-closed)                                                      | Ed25519 public key (PEM) printed by `tauri signer generate` |
+| `VAULT_UPDATER_PUBKEY`     | no       | the key compiled into the binary (see below)                               | Ed25519 public key **override** — point a build at a rotated or staging key |
 | `VAULT_UPDATER_STABLE_URL` | no       | `https://updates.functionfly.app/vault/stable/manifest.json`              | Stable-channel update manifest endpoint                      |
 | `VAULT_UPDATER_BETA_URL`   | no       | `https://updates.functionfly.app/vault/beta/manifest.json`                | Beta-channel update manifest endpoint                        |
 
@@ -313,17 +315,29 @@ contract but with the vault-specific env-var names:
 > `{{target_version}}` token, and a URL containing one is requested
 > verbatim and 404s.
 
+**Where the verification key comes from.** The Ed25519 public key lives in
+`plugins.updater.pubkey` in `src-tauri/tauri.conf.json`, and Tauri compiles
+it into the binary. That is what makes auto-update work for an ordinary
+user, who installed the app and has no environment variables set.
+
+`VAULT_UPDATER_PUBKEY` is an **override**, not the primary source: when it
+is set to a non-blank value it wins, so an operator can point a build at a
+rotated or staging key without rebuilding. The resolution order is:
+
+1. `VAULT_UPDATER_PUBKEY` (if set and non-blank)
+2. `plugins.updater.pubkey` compiled into the binary
+3. neither → typed `missing_pubkey` error, no manifest is fetched
+
 **Fail-closed contract.** Every `vault_check_update` and
-`vault_apply_update` call reads the config from the process env at
-call time. A missing or empty `VAULT_UPDATER_PUBKEY` raises a typed
-`missing_pubkey` error — the Rust core refuses to fetch any
-manifest, the webview surfaces the code in a typed error envelope,
-and a blank per-channel URL raises `invalid_endpoint`. There is no
-fallback to an unsigned update.
+`vault_apply_update` call resolves the key at call time. If no key is
+available at all, the call raises a typed `missing_pubkey` error — the
+Rust core refuses to fetch any manifest, the webview surfaces the code in
+a typed error envelope, and a blank per-channel URL raises
+`invalid_endpoint`. There is no fallback to an unsigned update.
 
 > **Do not delete the `plugins.updater` block from `tauri.conf.json`.**
 > It looks like dead config because `commands/updater.rs` overrides the
-> pubkey and endpoints at runtime — but the plugin's `Config` struct has a
+> endpoints at runtime — but the plugin's `Config` struct has a
 > `pubkey: String` field with no serde default, so an absent section
 > deserialises as `null` and the app **panics on startup**:
 >
@@ -332,11 +346,19 @@ fallback to an unsigned update.
 > your Tauri configuration: invalid type: null, expected struct Config")
 > ```
 >
-> The empty `pubkey` / `endpoints` values are intentional placeholders.
-> They are safe: `verify_signature` calls `PublicKey::decode(..)?`, so an
-> empty key returns an error — it can never silently skip verification.
-> Verified that `bunx tauri build --no-bundle` (what CI runs) exits 0 both
-> with and without this block, so keeping it does not require a signing key.
+> The empty `endpoints` list is an intentional placeholder: the per-channel
+> URLs are supplied at runtime. The `pubkey` is **not** a placeholder — it
+> must hold the real key, because the Tauri CLI reads this same field when
+> it signs the updater artefacts. An empty pubkey makes the *release build*
+> fail at the signing step, which no CI gate would otherwise catch (CI
+> builds with `--no-bundle`, which produces nothing to sign).
+
+**Keeping the two keys in sync.** The CLI signs artefacts with
+`TAURI_SIGNING_PRIVATE_KEY` but reads the verification key from
+`tauri.conf.json`. If the two ever drift apart, the release still builds
+and still publishes — and every update fails verification on a user's
+machine. `scripts/release/verify-updater-keypair.sh` turns that into a
+hard failure and runs in CI and in `release.yml`.
 
 **Operator-side release flow** (the canonical contract is mirrored
 in `src-tauri/src/updater.rs`). Three shell scripts ship in

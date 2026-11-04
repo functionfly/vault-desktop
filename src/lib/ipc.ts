@@ -236,10 +236,12 @@ export const ipc = {
     invoke<Record<string, unknown>>("list_audit", { secretId, limit }),
 
   // ── Updater (signed auto-update; fail-closed) ──────────────────────────
-  // The Rust core enforces a `VAULT_UPDATER_PUBKEY` requirement and
-  // refuses to check for updates without a valid Ed25519 pubkey. See
+  // The Rust core refuses to check for updates without a valid Ed25519
+  // pubkey. It is compiled into the binary from
+  // `plugins.updater.pubkey`; `VAULT_UPDATER_PUBKEY` is an operator
+  // override that takes precedence. See
   // `src-tauri/src/updater.rs::UpdaterConfig::from_env` for the
-  // contract. When the env var is unset, the response is a typed
+  // contract. When no key is available at all, the response is a typed
   // `{ code: "missing_pubkey", ... }` envelope rather than a stack
   // trace so the React UI can render a clear "updater disabled"
   // state.

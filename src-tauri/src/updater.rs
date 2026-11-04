@@ -3,8 +3,14 @@
 //! Mirrors `studio-desktop/src-tauri/src/updater.rs` (Phase 5 of the
 //! studio plan) but with the FunctionFly Vault env-var contract:
 //!
-//! - `VAULT_UPDATER_PUBKEY` — **required**, fail-closed when missing.
-//!   The Ed25519 public key (PEM) printed by `tauri signer generate`.
+//! - `VAULT_UPDATER_PUBKEY` — **optional override**. The Ed25519 public
+//!   key printed by `tauri signer generate`. When unset, the key baked
+//!   into the binary at build time (see `plugins.updater.pubkey` in
+//!   `tauri.conf.json`) is used instead. That baked value is what makes
+//!   auto-update work for an ordinary user who installed the app and has
+//!   no environment variables set; the env var exists so an operator can
+//!   point a build at a different key (rotation, staging) without
+//!   rebuilding.
 //! - `VAULT_UPDATER_{STABLE,BETA}_URL` — optional per-channel endpoint.
 //!   When unset, defaults to
 //!   `https://updates.functionfly.app/vault/{channel}/manifest.json`
@@ -27,7 +33,7 @@
 //! client.
 //!
 //! Failure modes:
-//! - **Missing pubkey** → fail closed. Every `vault_check_update` /
+//! - **No pubkey at all** → fail closed. Every `vault_check_update` /
 //!   `vault_apply_update` returns `missing_pubkey`. We never trust an
 //!   unsigned bundle.
 //! - **Blank URL** → fail closed. A blank `VAULT_UPDATER_*_URL` raises
@@ -88,9 +94,18 @@ impl fmt::Display for UpdaterChannel {
 
 #[derive(Debug, Clone)]
 pub struct UpdaterConfig {
-    /// Ed25519 public key (PEM) printed by `tauri signer generate`.
-    /// Stored in the build environment as `VAULT_UPDATER_PUBKEY`; never
-    /// committed.
+    /// Ed25519 public key (base64 minisign format) used to verify update
+    /// signatures.
+    ///
+    /// Resolution order:
+    /// 1. `VAULT_UPDATER_PUBKEY` — an operator override, used to point a
+    ///    build at a rotated or staging key without rebuilding.
+    /// 2. The key baked into the binary at build time, read from
+    ///    `plugins.updater.pubkey` in `tauri.conf.json`.
+    ///
+    /// The baked value is what makes auto-update work for an ordinary
+    /// user, who has no environment variables set. The env var is an
+    /// override, not the primary source.
     pub pubkey: String,
 
     /// Per-channel update-manifest endpoint. The manifest is a static
@@ -104,7 +119,7 @@ pub struct UpdaterConfig {
 #[derive(Debug, Error)]
 pub enum UpdaterError {
     #[error(
-        "VAULT_UPDATER_PUBKEY env var is required (set to the Ed25519 public key printed by `tauri signer generate`)"
+        "no updater public key available: neither VAULT_UPDATER_PUBKEY nor the key baked into the binary (plugins.updater.pubkey) is set"
     )]
     MissingPubkey,
 
@@ -119,19 +134,24 @@ pub enum UpdaterError {
 }
 
 impl UpdaterConfig {
-    /// Build the config from the process environment. Returns
-    /// `Err(UpdaterError::MissingPubkey)` when `VAULT_UPDATER_PUBKEY`
-    /// is unset or empty — fail-closed per the launch extras checklist
-    /// (downstream commands refuse to check for updates without a
-    /// valid signing key).
-    pub fn from_env() -> Result<Self, UpdaterError> {
-        let pubkey = std::env::var("VAULT_UPDATER_PUBKEY")
-            .map_err(|_| UpdaterError::MissingPubkey)?
-            .trim()
-            .to_string();
-        if pubkey.is_empty() {
-            return Err(UpdaterError::MissingPubkey);
-        }
+    /// Build the config from the process environment, falling back to the
+    /// public key baked into the binary at build time.
+    ///
+    /// `VAULT_UPDATER_PUBKEY` wins when it is set to a non-blank value;
+    /// otherwise `baked_pubkey` — the value read from
+    /// `plugins.updater.pubkey` in `tauri.conf.json` — is used. When
+    /// neither is available this returns
+    /// `Err(UpdaterError::MissingPubkey)`, so a build with no usable key
+    /// fails closed rather than trusting an unsigned bundle.
+    pub fn from_env(baked_pubkey: Option<&str>) -> Result<Self, UpdaterError> {
+        let pubkey = match std::env::var("VAULT_UPDATER_PUBKEY") {
+            Ok(v) if !v.trim().is_empty() => v.trim().to_string(),
+            _ => baked_pubkey
+                .map(str::trim)
+                .filter(|v| !v.is_empty())
+                .ok_or(UpdaterError::MissingPubkey)?
+                .to_string(),
+        };
 
         let mut channel_urls = HashMap::with_capacity(UpdaterChannel::ALL.len());
         for channel in UpdaterChannel::ALL {
@@ -236,7 +256,7 @@ mod tests {
     fn from_env_fails_closed_when_pubkey_missing() {
         let _guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         clear_env();
-        let err = UpdaterConfig::from_env().unwrap_err();
+        let err = UpdaterConfig::from_env(None).unwrap_err();
         assert!(matches!(err, UpdaterError::MissingPubkey));
     }
 
@@ -245,7 +265,50 @@ mod tests {
         let _guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         clear_env();
         set_pubkey("   ");
-        let err = UpdaterConfig::from_env().unwrap_err();
+        let err = UpdaterConfig::from_env(None).unwrap_err();
+        assert!(matches!(err, UpdaterError::MissingPubkey));
+    }
+
+    #[test]
+    fn from_env_falls_back_to_baked_pubkey() {
+        // The path an ordinary end user takes: no env var, but the binary
+        // carries the key compiled in from `plugins.updater.pubkey`.
+        let _guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        clear_env();
+        let cfg = UpdaterConfig::from_env(Some("baked-key")).unwrap();
+        assert_eq!(cfg.pubkey, "baked-key");
+    }
+
+    #[test]
+    fn from_env_prefers_env_over_baked_pubkey() {
+        // An operator override wins over the baked key so a build can be
+        // pointed at a rotated or staging key without a rebuild.
+        let _guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        clear_env();
+        set_pubkey("env-key");
+        let cfg = UpdaterConfig::from_env(Some("baked-key")).unwrap();
+        assert_eq!(cfg.pubkey, "env-key");
+    }
+
+    #[test]
+    fn from_env_blank_env_falls_back_to_baked_pubkey() {
+        // A blank env var is treated as unset rather than as an error, so
+        // a stray `VAULT_UPDATER_PUBKEY=` in a shell profile does not
+        // break the updater for a user who has a baked key.
+        let _guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        clear_env();
+        set_pubkey("   ");
+        let cfg = UpdaterConfig::from_env(Some("baked-key")).unwrap();
+        assert_eq!(cfg.pubkey, "baked-key");
+    }
+
+    #[test]
+    fn from_env_blank_baked_pubkey_fails_closed() {
+        // A baked key that is present but blank must not be accepted —
+        // that would silently disable signature verification.
+        let _guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        clear_env();
+        let err = UpdaterConfig::from_env(Some("   ")).unwrap_err();
         assert!(matches!(err, UpdaterError::MissingPubkey));
     }
 
@@ -254,7 +317,7 @@ mod tests {
         let _guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         clear_env();
         set_pubkey("dGVzdC1wdWJrZXk=");
-        let cfg = UpdaterConfig::from_env().unwrap();
+        let cfg = UpdaterConfig::from_env(None).unwrap();
         for ch in UpdaterChannel::ALL {
             let url = cfg.channel_url(ch).unwrap();
             assert!(url.starts_with("https://updates.functionfly.app/vault/"));
@@ -287,7 +350,7 @@ mod tests {
             UpdaterChannel::Beta,
             "https://staging.example.com/vault-beta.json",
         );
-        let cfg = UpdaterConfig::from_env().unwrap();
+        let cfg = UpdaterConfig::from_env(None).unwrap();
         assert_eq!(
             cfg.channel_url(UpdaterChannel::Beta).unwrap(),
             "https://staging.example.com/vault-beta.json"
@@ -305,7 +368,7 @@ mod tests {
         clear_env();
         set_pubkey("dGVzdC1wdWJrZXk=");
         set_channel_url(UpdaterChannel::Stable, "   ");
-        let err = UpdaterConfig::from_env().unwrap_err();
+        let err = UpdaterConfig::from_env(None).unwrap_err();
         match err {
             UpdaterError::InvalidUrl { channel, url } => {
                 assert_eq!(channel, UpdaterChannel::Stable);

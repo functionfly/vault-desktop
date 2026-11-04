@@ -108,13 +108,16 @@ jobs:
 
       - name: cargo test (unit + integration)
         working-directory: src-tauri
-        # `--lib` covers the 31 crypto/updater unit tests.
-        # `--test orchestrator_mock` covers the 10 mockito integration tests
+        # `--lib` covers the crypto/updater unit tests.
+        # `--test orchestrator_mock` covers the mockito integration tests
         # that prove the HTTP + CSRF contract without a real orchestrator.
+        # `--test updater_config` proves the updater's verification key is
+        # present and parseable in the shipped configuration.
         run: |
           cargo test --lib
           cargo test --test orchestrator_mock
           cargo test --test device_flow
+          cargo test --test updater_config
 
   # ── Cross-platform compile matrix ─────────────────────────────────────────
   # Proves the crate compiles and the webview bundles on every shipping OS.
@@ -280,6 +283,20 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y python3 openssh-client
           ./scripts/release/publish-update.test.sh
+
+      - name: Assert the updater keypair matches
+        # The updater's verification key lives in `plugins.updater.pubkey`
+        # (tauri.conf.json) while release artefacts are signed with
+        # `TAURI_SIGNING_PRIVATE_KEY`. If those two drift apart, the
+        # release still builds and every update fails signature
+        # verification on a user's machine.
+        #
+        # Without a signing key the script still asserts the configured
+        # pubkey is present and well-formed, so an empty pubkey — which
+        # would break the release build at the signing step — is caught
+        # here too.
+        shell: bash
+        run: ./scripts/release/verify-updater-keypair.sh
 
       - name: Publish smoke script
         # `scripts/staging-smoke.sh` is still the manual pre-merge gate for a

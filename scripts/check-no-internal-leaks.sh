@@ -79,8 +79,19 @@ check "R2 access key id" '<R2 access key id — see the private runbook>' "${PUB
 # 3. The updater public-key fingerprint.
 check "updater key fingerprint" '<updater key fingerprint — see the private runbook>' "${PUBLISHABLE[@]}"
 
-# 4. The public key material itself (base64 prefix).
-check "updater pubkey prefix" 'dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWdu' "${PUBLISHABLE[@]}"
+# 4. The public key material itself (base64 prefix).#
+# NOTE: the updater's Ed25519 PUBLIC key is now committed to
+# `src-tauri/tauri.conf.json` (`plugins.updater.pubkey`). That is not a
+# leak and not a regression — the key has to be compiled into the
+# binary, otherwise an installed client has no way to verify an update
+# signature and auto-update is permanently broken. A public verification
+# key is not secret material; the PRIVATE key is, and check 7 covers it.
+#
+# What this check still protects is the *prose*: the key must not be
+# pasted into the README, the CHANGELOG, or the release scripts, where
+# it would be copied into release notes and published to users who have
+# no use for it. `src-tauri/tauri.conf.json` is deliberately NOT in the
+# PUBLISHABLE list for exactly that reason.check "updater pubkey prefix" 'dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWdu' "${PUBLISHABLE[@]}"
 
 # 5. The maintainer's home directory, which leaks the build-host username.
 check "operator home path" '<operator home>' "${PUBLISHABLE[@]}"

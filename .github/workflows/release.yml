@@ -188,6 +188,24 @@ jobs:
             exit 1
           fi
 
+      # The updater's verification key lives in `plugins.updater.pubkey`
+      # (tauri.conf.json) while the artefacts are signed with
+      # `TAURI_SIGNING_PRIVATE_KEY`. If those two ever drift apart, the
+      # release still builds and still publishes — and every update
+      # fails signature verification on a user's machine. This gate
+      # turns that silent breakage into a failed build.
+      - name: Assert the updater keypair matches
+        shell: bash
+        env:
+          VAULT_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          VAULT_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+        run: |
+          set -euo pipefail
+          if ! ./scripts/release/verify-updater-keypair.sh; then
+            echo "::error::The updater public key does not match the signing key."
+            exit 1
+          fi
+
       - name: Build + sign bundles
         uses: tauri-apps/tauri-action@v0
         env:

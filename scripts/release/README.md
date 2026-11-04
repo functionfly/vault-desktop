@@ -11,6 +11,7 @@ side-car.
 | -------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------- |
 | `KEY-FINGERPRINT.txt`                                    | Public key path, SHA-256, algorithm, rotation procedure. Reference for the rotating signer.                            |
 | `load-updater-env.sh`                                    | Sources `VAULT_UPDATER_PUBKEY` + `TAURI_SIGNING_PRIVATE_KEY_*` from `~/.tauri/` into the current shell.                |
+| `verify-updater-keypair.sh`                              | Asserts the verification key in `tauri.conf.json` and the release signing key are the same keypair. Fails the release if they drift. |
 | `provision-r2-bucket.sh`                                 | One-time bootstrap: head-bucket → versioning → 30-day noncurrent lifecycle → read-only CORS → write/read/delete probe. |
 | `publish-update.sh <channel> <version> <side-car> <sig> [target]` | Uploads one side-car + `.sig` and merges that platform's entry into the channel manifest.                    |
 | `publish-updater-assets.sh <channel> <version> <dir>`   | Publishes every updater artefact in a directory, building one manifest across all platforms.                             |
@@ -27,6 +28,13 @@ side-car.
 # 1. Source signing + updater env from ~/.tauri/
 cd ~/projects/vault-desktop
 source scripts/release/load-updater-env.sh
+
+# 1b. Assert the verification key and the signing key are the same pair.
+#     The Tauri CLI signs artefacts with TAURI_SIGNING_PRIVATE_KEY but
+#     reads the verification key from plugins.updater.pubkey in
+#     tauri.conf.json. If they drift apart the release still publishes,
+#     and every update fails verification on a user's machine.
+./scripts/release/verify-updater-keypair.sh
 
 # 2. Source R2 creds from dotenvx-encrypted .env
 #    (or in CI: dotenvx get -f .env R2_ACCESS_KEY_ID; export AWS_ACCESS_KEY_ID="$...")
@@ -58,6 +66,18 @@ cargo-tauri signer verify \
     /tmp/functionfly-vault-desktop_0.1.2_amd64.AppImage.tar.gz \
     /tmp/functionfly-vault-desktop_0.1.2_amd64.AppImage.tar.gz.sig
 ```
+
+### Where the verification key lives
+
+The Ed25519 public key is compiled into the binary from
+`plugins.updater.pubkey` in `src-tauri/tauri.conf.json`. That is what
+makes auto-update work for an ordinary user, who has no environment
+variables set. `VAULT_UPDATER_PUBKEY` is an **override** for operators
+(key rotation, staging) and takes precedence over the compiled-in key.
+
+Rotating the key therefore means updating `tauri.conf.json` as well as
+the keypair on the build host — `verify-updater-keypair.sh` is what
+catches it if you forget.
 
 ## One-time bucket bootstrap
 

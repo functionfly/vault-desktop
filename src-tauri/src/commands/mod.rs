@@ -1155,3 +1155,105 @@ fn login_user_stub(_session: &StoredSession) -> LoginUser {
         role: None,
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// `looks_like_api_key` decides whether a stored credential is sent to
+    /// the API-key endpoints or the session-token endpoints. A credential
+    /// misrouted to the wrong endpoint is bounced on every launch, so the
+    /// shape test is worth pinning.
+    #[test]
+    fn api_key_shape_is_recognised() {
+        assert!(looks_like_api_key("ffp_1_abc_def"));
+        assert!(looks_like_api_key("fff_2_x_y"));
+        assert!(looks_like_api_key("ffx_1_a_b"));
+        assert!(looks_like_api_key("ffe_9_a_b"));
+        assert!(looks_like_api_key("ffo_1_a_b"));
+        assert!(looks_like_api_key("fft_1_a_b"));
+        assert!(looks_like_api_key("ffmp_1_a_b"));
+        assert!(looks_like_api_key("ffr_1_a_b"));
+    }
+
+    #[test]
+    fn session_tokens_are_not_mistaken_for_api_keys() {
+        // An opaque JWT from `/v1/auth/login` does not start with `ff`.
+        assert!(!looks_like_api_key(
+            "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.payload.sig"
+        ));
+        assert!(!looks_like_api_key(""));
+        assert!(!looks_like_api_key("ff"));
+        // Two segments is not enough: the real key shape is
+        // `{prefix}_{version}_{random}_{checksum}`.
+        assert!(!looks_like_api_key("ffp_1"));
+    }
+
+    #[test]
+    fn list_query_defaults_to_fifty() {
+        // The default is what the webview relies on when it sends a
+        // query without a limit.
+        assert_eq!(default_limit(), 50);
+    }
+
+    #[test]
+    fn list_query_uses_the_default_when_limit_is_absent() {
+        #[derive(Deserialize)]
+        struct Probe {
+            #[serde(default = "default_limit")]
+            limit: u32,
+        }
+        let probe: Probe = serde_json::from_str("{}").unwrap();
+        assert_eq!(probe.limit, 50);
+
+        // An explicit limit wins.
+        let probe: Probe = serde_json::from_str(r#"{"limit": 10}"#).unwrap();
+        assert_eq!(probe.limit, 10);
+    }
+
+    /// The device-flow map is process-global state shared by every
+    /// concurrent sign-in attempt. Losing a flow means the user is stuck
+    /// at the "enter your code" screen with no way forward, so the
+    /// insert/take round trip is worth pinning.
+    #[test]
+    fn device_flow_is_stored_and_taken_exactly_once() {
+        let flow = crate::api::DeviceAuthorization::new(
+            "device-code-value",
+            "WXYZ-2345",
+            "https://example.com/device",
+            "https://example.com/device?code=WXYZ-2345",
+            900,
+            5,
+        );
+
+        {
+            let mut flows = device_flows().lock().unwrap();
+            flows.insert(
+                "WXYZ-2345".into(),
+                ("https://api.example.com".to_string(), flow.clone()),
+            );
+        }
+
+        // Taking it once succeeds.
+        let taken = device_flows().lock().unwrap().remove("WXYZ-2345");
+        assert!(taken.is_some(), "the pending flow should be present");
+
+        // Taking it a second time does not — the flow is single-use.
+        let again = device_flows().lock().unwrap().remove("WXYZ-2345");
+        assert!(again.is_none(), "the flow must not be reusable");
+
+        // The stored base URL round-trips intact.
+        let (_, auth) = taken.unwrap();
+        assert_eq!(auth.user_code, "WXYZ-2345");
+        assert_eq!(auth.verification_uri, "https://example.com/device");
+    }
+
+    #[test]
+    fn unknown_device_code_takes_nothing() {
+        assert!(device_flows()
+            .lock()
+            .unwrap()
+            .remove("NOT-A-REAL-CODE")
+            .is_none());
+    }
+}

@@ -3,7 +3,7 @@
 All notable changes to FunctionFly Vault Desktop are recorded here. The
 project follows [Semantic Versioning](https://semver.org/).
 
-## [0.1.0] — 2026-10-06 — first public release
+## [0.1.0] — 2026-11-03 — first public release
 
 ### Highlights
 
@@ -54,26 +54,37 @@ list_audit_by_action, list_audit_by_actor
 
 ### Tests
 
-- 34 Rust unit tests (`cargo test --lib`) — AES-256-GCM roundtrip,
-- 10 mockito-backed integration tests
+- 52 Rust unit tests (`cargo test --lib`) — AES-256-GCM roundtrip,
+- 19 mockito-backed integration tests
   (`cargo test --test orchestrator_mock`) — login round-trip, CSRF
   fetch + retry, non-loopback base-URL rejection, fail-closed without
   a token, captcha-required surfacing.
 - 10 device-flow integration tests (`cargo test --test device_flow`) —
   the RFC 8628 device-grant exchange.
+- 4 updater-config contract tests (`cargo test --test updater_config`) —
+  the verification key is present, parseable by the plugin's own config
+  type, and decodes as a minisign public key.
 - 58 vitest contract tests (`bunx vitest run`) — every typed wrapper
   in `src/lib/ipc.ts` sends the right (command, args) shape; typed
   `{kind, message}` rejections parse into `VaultIpcError`.
-- **Total: 112/112 tests pass** (34 Rust lib + 10 mockito integration +
-  10 device flow + 58 vitest).
+- **Total: 143/143 tests pass** (52 Rust lib + 19 mockito integration +
+  10 device flow + 4 updater config + 58 vitest).
 
 ### Updater
 
 - Signed auto-update via `tauri-plugin-updater` (mirror of the
-  `studio-desktop` Phase 5 pattern). Fail-closed contract:
-  `VAULT_UPDATER_PUBKEY` is **required**; the Rust core refuses to
-  check for updates without a valid Ed25519 pubkey and surfaces a
-  typed `missing_pubkey` error to the webview.
+  `studio-desktop` Phase 5 pattern). Fail-closed contract: the Rust
+  core refuses to check for updates without a valid Ed25519 pubkey and
+  surfaces a typed `missing_pubkey` error to the webview.
+- The Ed25519 public key is **compiled into the binary** via
+  `plugins.updater.pubkey` in `tauri.conf.json`, so an installed
+  client can verify updates with no environment variable set.
+  `VAULT_UPDATER_PUBKEY` is now an *override* for operators (key
+  rotation, staging), not the primary source.
+- `scripts/release/verify-updater-keypair.sh` asserts that the
+  committed verification key and the release signing key are the same
+  keypair. It runs in CI and in `release.yml`; without it, a mismatch
+  would publish artefacts that every client rejects at install time.
 - Two channels: `stable` and `beta`. Per-channel endpoint env vars
   (`VAULT_UPDATER_STABLE_URL`, `VAULT_UPDATER_BETA_URL`) default to
   the canonical R2 path layout
