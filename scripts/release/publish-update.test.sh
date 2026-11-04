@@ -19,6 +19,7 @@ DIR="$(cd "$(dirname "$0")" && pwd)"
 SCRIPT="$DIR/publish-update.sh"
 LOAD_ENV="$DIR/load-updater-env.sh"
 RENDER="$DIR/render-manifest.py"
+PROVISION="$DIR/provision-r2-bucket.sh"
 
 fail=0
 expect_exit() {
@@ -81,6 +82,7 @@ echo "→ syntax"
 expect_exit "publish-update.sh is bash-clean" 0 bash -n "$SCRIPT"
 expect_exit "load-updater-env.sh is bash-clean" 0 bash -n "$LOAD_ENV"
 expect_exit "render-manifest.py compiles" 0 "$PYTHON" -m py_compile "$RENDER"
+expect_exit "provision-r2-bucket.sh is bash-clean" 0 bash -n "$PROVISION"
 
 # 2. Usage on missing args
 echo
@@ -151,7 +153,7 @@ SIG_EOF
 head -c 4096 /dev/urandom > "$FIXTURE_DIR/app.tar.gz"
 
 SIG_CONTENT="$(tr -d '\r\n' < "$FIXTURE_DIR/app.tar.gz.sig")"
-BASE_URL="https://updates.functionfly.app/vault/stable/0.1.1"
+BASE_URL="https://updates.functionfly.com/vault/stable/0.1.1"
 
 render() {
   "$PYTHON" "$RENDER" \
@@ -284,7 +286,7 @@ expect_exit "a new version replaces the old platform entries" 0 \
   "$PYTHON" "$RENDER" \
     --version=0.2.0 \
     --pub-date=2026-11-03T12:00:00Z \
-    --url="https://updates.functionfly.app/vault/stable/0.2.0/app.tar.gz" \
+    --url="https://updates.functionfly.com/vault/stable/0.2.0/app.tar.gz" \
     --signature-file="$FIXTURE_DIR/app.tar.gz.sig" \
     --targets=linux-x86_64 \
     --existing="$FIXTURE_DIR/manifest.json" \
@@ -313,7 +315,7 @@ expect_exit "repointing a target at another archive is refused → exit 1" 1 \
   "$PYTHON" "$RENDER" \
     --version=0.1.1 \
     --pub-date=2026-11-03T12:00:00Z \
-    --url="https://updates.functionfly.app/vault/stable/0.1.1/other.tar.gz" \
+    --url="https://updates.functionfly.com/vault/stable/0.1.1/other.tar.gz" \
     --signature-file="$FIXTURE_DIR/app.tar.gz.sig" \
     --targets=linux-x86_64 \
     --existing="$FIXTURE_DIR/manifest.json"
@@ -329,9 +331,68 @@ expect_exit "a corrupt existing manifest is refused → exit 1" 1 \
     --targets=linux-x86_64 \
     --existing="$FIXTURE_DIR/corrupt.json"
 
+# 8k-2. `--repoint` is the ONLY way to move an already-published target,
+#       and it does move it. This is the deliberate-repair path: a
+#       manifest published against the wrong hostname has to be corrected,
+#       and the correction must be opt-in so a healthy publication is
+#       never silently repointed.
+expect_exit "--repoint moves an already-published target → exit 0" 0 \
+  "$PYTHON" "$RENDER" \
+    --version=0.1.1 \
+    --pub-date=2026-11-03T12:00:00Z \
+    --url="https://updates.functionfly.com/vault/stable/0.1.1/renamed.tar.gz" \
+    --signature-file="$FIXTURE_DIR/app.tar.gz.sig" \
+    --targets=linux-x86_64 \
+    --existing="$FIXTURE_DIR/manifest.json" \
+    --repoint \
+    --out="$FIXTURE_DIR/repointed.json"
+
+if "$PYTHON" - "$FIXTURE_DIR/repointed.json" <<'PY_EOF'
+import json
+import sys
+
+with open(sys.argv[1], "r", encoding="utf-8") as handle:
+    manifest = json.load(handle)
+
+entry = manifest["platforms"]["linux-x86_64"]
+assert entry["url"].endswith("/renamed.tar.gz"), entry["url"]
+assert entry["signature"], "the signature must survive the repoint"
+PY_EOF
+then
+  echo "  ✓ --repoint rewrites the URL and keeps the signature"
+else
+  echo "  ✗ --repoint did not produce the expected manifest"
+  fail=1
+fi
+
+# 8k-3. `--repoint` must not weaken the target-key validation: it only
+#       relaxes the "already points elsewhere" rule.
+expect_exit "--repoint still rejects an invalid target → exit 1" 1 \
+  "$PYTHON" "$RENDER" \
+    --version=0.1.1 \
+    --pub-date=2026-11-03T12:00:00Z \
+    --url="$BASE_URL/app.tar.gz" \
+    --signature-file="$FIXTURE_DIR/app.tar.gz.sig" \
+    --targets="linux-x86_64-unknown-bundle" \
+    --existing="$FIXTURE_DIR/manifest.json" \
+    --repoint
+
+# 8k-4. `publish-update.sh` only passes `--repoint` when the operator
+#       asks for it explicitly. A default run must not carry the flag,
+#       or the safety property above is silently gone.
+expect_false "publish-update.sh does not enable --repoint by default" \
+  bash -c "grep -E '^\s*--repoint' '$SCRIPT' | grep -qv 'VAULT_UPDATER_REPOINT'"
+
+if grep -q 'VAULT_UPDATER_REPOINT' "$SCRIPT"; then
+  echo "  ✓ publish-update.sh gates --repoint behind VAULT_UPDATER_REPOINT"
+else
+  echo "  ✗ publish-update.sh has no VAULT_UPDATER_REPOINT gate"
+  fail=1
+fi
+
 # 8l. The default endpoint the app uses is the channel manifest, and it
 #     carries no placeholder the plugin cannot substitute.
-if grep -q 'VAULT_UPDATER_STABLE_URL:=https://updates.functionfly.app/vault/stable/manifest.json' "$LOAD_ENV"; then
+if grep -q 'VAULT_UPDATER_STABLE_URL:=https://updates.functionfly.com/vault/stable/manifest.json' "$LOAD_ENV"; then
   echo "  ✓ the stable endpoint defaults to the channel manifest"
 else
   echo "  ✗ the stable endpoint default is not the channel manifest"
@@ -340,6 +401,41 @@ fi
 
 expect_false "the endpoint defaults carry no {{target_version}} placeholder" \
   bash -c "grep -E 'VAULT_UPDATER_(STABLE|BETA)_URL:=' '$LOAD_ENV' | grep -q 'target_version'"
+
+# 8m. The public host the manifest writes must be the same host the
+#     bucket is SERVED from.
+#
+# The outage this guards against: the manifest's `url` fields pointed at
+# `updates.functionfly.app` while the bucket was published and reachable
+# on `.com`. The manifest was syntactically valid, the artefact was
+# uploaded, and every client still got a 404 — because the hostname in
+# the manifest is not the hostname the bucket answers on.
+#
+# So the two must be derived from ONE variable, not written out
+# separately in two files.
+expect_true "the public host is a single shared variable" \
+  grep -q 'VAULT_UPDATER_PUBLIC_HOST' "$PROVISION"
+
+expect_true "provision-r2-bucket.sh attaches the public custom domain" \
+  grep -q 'r2/buckets/\${R2_BUCKET}/custom_domains' "$PROVISION"
+
+expect_true "provision-r2-bucket.sh probes the public path anonymously" \
+  grep -q 'VAULT_UPDATER_PUBLIC_HOST}/\${PROBE_KEY}' "$PROVISION"
+
+# The manifest's URL base and the provisioned host must not drift apart.
+MANIFEST_BASE="$(grep -oE 'https://[a-z0-9.-]+/vault' "$SCRIPT" | head -1 | sed 's|/vault$||')"
+PROVISION_HOST="$(grep -oE 'VAULT_UPDATER_PUBLIC_HOST:-[a-z0-9.-]+' "$PROVISION" | head -1 | sed 's/.*-//')"
+if [[ -n "$MANIFEST_BASE" && -n "$PROVISION_HOST" ]]; then
+  if [[ "$MANIFEST_BASE" == *"${PROVISION_HOST}" ]]; then
+    echo "  ✓ the manifest's URL host matches the provisioned custom domain"
+  else
+    echo "  ✗ the manifest writes ${MANIFEST_BASE} but the bucket is served from ${PROVISION_HOST}"
+    fail=1
+  fi
+else
+  echo "  ✗ could not determine the manifest host or the provisioned host"
+  fail=1
+fi
 
 # ── 9. The artefact → manifest-target mapping ───────────────────────────
 #
@@ -364,16 +460,21 @@ expect_targets() {
   fi
 }
 
+# These are the names the Tauri v2 bundler ACTUALLY produces. The v2
+# updater plugin installs the AppImage, deb and rpm in place — they are
+# not wrapped in a .tar.gz. The macOS .app and the Windows installers
+# ARE wrapped. Asserting the v1 names here let the mapper carry a table
+# that rejected every real Linux artefact.
 expect_targets "Linux AppImage → appimage key + generic key" \
-  "functionfly-vault-desktop_0.1.0_amd64.AppImage.tar.gz" \
+  "functionfly-vault-desktop_0.1.0_amd64.AppImage" \
   "linux-x86_64-appimage,linux-x86_64"
 
 expect_targets "Linux deb → deb key only" \
-  "functionfly-vault-desktop_0.1.0_amd64.deb.tar.gz" \
+  "functionfly-vault-desktop_0.1.0_amd64.deb" \
   "linux-x86_64-deb"
 
 expect_targets "Linux rpm → rpm key only" \
-  "functionfly-vault-desktop_0.1.0_amd64.rpm.tar.gz" \
+  "functionfly-vault-desktop_0.1.0_amd64.rpm" \
   "linux-x86_64-rpm"
 
 expect_targets "macOS aarch64 app → app key + generic key" \
@@ -393,7 +494,19 @@ expect_targets "Windows MSI → msi key only" \
   "windows-x86_64-msi"
 
 expect_exit "an installer that is not an updater artefact is rejected → exit 1" 1 \
-  "$PYTHON" "$DIR/updater-targets.py" "functionfly-vault-desktop_0.1.0_amd64.AppImage"
+  "$PYTHON" "$DIR/updater-targets.py" "functionfly-vault-desktop_0.1.0_amd64.exe"
+
+# The Tauri v1 artefact names must be REJECTED, not mapped. The v2
+# bundler never produces them, so a manifest entry built from one would
+# point at a URL that does not exist.
+expect_exit "the Tauri v1 .AppImage.tar.gz name is rejected → exit 1" 1 \
+  "$PYTHON" "$DIR/updater-targets.py" "functionfly-vault-desktop_0.1.0_amd64.AppImage.tar.gz"
+
+expect_exit "the Tauri v1 .deb.tar.gz name is rejected → exit 1" 1 \
+  "$PYTHON" "$DIR/updater-targets.py" "functionfly-vault-desktop_0.1.0_amd64.deb.tar.gz"
+
+expect_exit "the Tauri v1 .rpm.tar.gz name is rejected → exit 1" 1 \
+  "$PYTHON" "$DIR/updater-targets.py" "functionfly-vault-desktop_0.1.0_amd64.rpm.tar.gz"
 
 # Every key the mapper emits must be a key the plugin can look up.
 if "$PYTHON" - "$DIR/updater-targets.py" <<'PY_EOF'
@@ -402,9 +515,9 @@ import subprocess
 import sys
 
 names = [
-    "functionfly-vault-desktop_0.1.0_amd64.AppImage.tar.gz",
-    "functionfly-vault-desktop_0.1.0_amd64.deb.tar.gz",
-    "functionfly-vault-desktop_0.1.0_amd64.rpm.tar.gz",
+    "functionfly-vault-desktop_0.1.0_amd64.AppImage",
+    "functionfly-vault-desktop_0.1.0_amd64.deb",
+    "functionfly-vault-desktop_0.1.0_amd64.rpm",
     "functionfly-vault-desktop_aarch64.app.tar.gz",
     "functionfly-vault-desktop_universal.app.tar.gz",
     "functionfly-vault-desktop_x64-setup.nsis.zip",

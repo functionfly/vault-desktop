@@ -96,9 +96,9 @@ s3://... -` reports the byte count.
   ok
 
 ── Done ──
-  side-car:  https://updates.functionfly.app/vault/stable/0.1.1/functionfly-vault-desktop_0.1.1.tar.gz
-  signature: https://updates.functionfly.app/vault/stable/0.1.1/functionfly-vault-desktop_0.1.1.tar.gz.sig
-  manifest:  https://updates.functionfly.app/vault/stable/manifest.json
+  side-car:  https://updates.functionfly.com/vault/stable/0.1.1/functionfly-vault-desktop_0.1.1.tar.gz
+  signature: https://updates.functionfly.com/vault/stable/0.1.1/functionfly-vault-desktop_0.1.1.tar.gz.sig
+  manifest:  https://updates.functionfly.com/vault/stable/manifest.json
 ```
 
 ### `publish-update.sh beta 0.2.0-rc.1 …`
@@ -125,8 +125,8 @@ versioned side-cars.
   "notes": "vault 0.1.1 (channel: stable)",
   "platforms": {
     "x86_64-unknown-linux-gnu": {
-      "url": "https://updates.functionfly.app/vault/stable/0.1.1/functionfly-vault-desktop_0.1.1.tar.gz",
-      "signature": "https://updates.functionfly.app/vault/stable/0.1.1/functionfly-vault-desktop_0.1.1.tar.gz.sig"
+      "url": "https://updates.functionfly.com/vault/stable/0.1.1/functionfly-vault-desktop_0.1.1.tar.gz",
+      "signature": "https://updates.functionfly.com/vault/stable/0.1.1/functionfly-vault-desktop_0.1.1.tar.gz.sig"
     }
   }
 }
@@ -141,8 +141,8 @@ versioned side-cars.
   "notes": "vault 0.2.0-rc.1 (channel: beta)",
   "platforms": {
     "x86_64-unknown-linux-gnu": {
-      "url": "https://updates.functionfly.app/vault/beta/0.2.0-rc.1/functionfly-vault-desktop_0.2.0-rc.1.tar.gz",
-      "signature": "https://updates.functionfly.app/vault/beta/0.2.0-rc.1/functionfly-vault-desktop_0.2.0-rc.1.tar.gz.sig"
+      "url": "https://updates.functionfly.com/vault/beta/0.2.0-rc.1/functionfly-vault-desktop_0.2.0-rc.1.tar.gz",
+      "signature": "https://updates.functionfly.com/vault/beta/0.2.0-rc.1/functionfly-vault-desktop_0.2.0-rc.1.tar.gz.sig"
     }
   }
 }

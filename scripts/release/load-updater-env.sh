@@ -38,8 +38,8 @@ set -euo pipefail
 # `{{bundle_type}}` — there is no `{{target_version}}` placeholder, and
 # the previous default left that token in the request URL verbatim,
 # which no object in the bucket could ever satisfy.
-: "${VAULT_UPDATER_STABLE_URL:=https://updates.functionfly.app/vault/stable/manifest.json}"
-: "${VAULT_UPDATER_BETA_URL:=https://updates.functionfly.app/vault/beta/manifest.json}"
+: "${VAULT_UPDATER_STABLE_URL:=https://updates.functionfly.com/vault/stable/manifest.json}"
+: "${VAULT_UPDATER_BETA_URL:=https://updates.functionfly.com/vault/beta/manifest.json}"
 
 # ── Pre-flight checks (fail closed with a clear message) ──────────────
 for f in "$VAULT_KEY_DIR/vault-key.json" "$VAULT_PUBKEY_FILE" "$VAULT_KEY_PASSWORD_FILE"; do
@@ -64,6 +64,17 @@ export VAULT_UPDATER_STABLE_URL
 export VAULT_UPDATER_BETA_URL
 
 export TAURI_SIGNING_PRIVATE_KEY_PATH="$VAULT_KEY_DIR/vault-key.json"
+# The Tauri CLI's bundler reads ONLY `TAURI_SIGNING_PRIVATE_KEY` — never
+# the `_PATH` variant. `cargo-tauri signer sign` accepts the `_PATH` form,
+# but `tauri build` does not, so exporting only `_PATH` made the operator
+# release path fail with:
+#
+#   "A public key has been found, but no private key. Make sure to set
+#    `TAURI_SIGNING_PRIVATE_KEY` environment variable."
+#
+# The CLI accepts either the key material or a path to the file, so the
+# path is exported here. Both names are set for compatibility.
+export TAURI_SIGNING_PRIVATE_KEY="$VAULT_KEY_DIR/vault-key.json"
 export TAURI_SIGNING_PRIVATE_KEY_PASSWORD
 TAURI_SIGNING_PRIVATE_KEY_PASSWORD=$(cat "$VAULT_KEY_PASSWORD_FILE")
 

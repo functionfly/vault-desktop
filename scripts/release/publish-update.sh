@@ -183,7 +183,7 @@ if [[ "$SIG_NAME" != "${ARCHIVE_NAME}.sig" ]]; then
   exit 1
 fi
 
-PUBLIC_BASE="${VAULT_UPDATER_PUBLIC_BASE:-https://updates.functionfly.app/vault/${CHANNEL}}"
+PUBLIC_BASE="${VAULT_UPDATER_PUBLIC_BASE:-https://updates.functionfly.com/vault/${CHANNEL}}"
 SIDECAR_KEY="vault/${CHANNEL}/${VERSION}/${ARCHIVE_NAME}"
 SIG_KEY="vault/${CHANNEL}/${VERSION}/${SIG_NAME}"
 MANIFEST_KEY="vault/${CHANNEL}/manifest.json"
@@ -220,6 +220,17 @@ RENDER_ARGS=(
 )
 if [[ -n "$EXISTING_MANIFEST" ]]; then
   RENDER_ARGS+=("--existing=${EXISTING_MANIFEST}")
+fi
+
+# Repairing a publication that was broken and therefore never reachable
+# (a manifest published against the wrong hostname, say) requires the
+# target's URL to change for a version that is already published. The
+# renderer refuses that by default, because repointing a LIVE version
+# would serve different bytes to clients that already cached the
+# manifest. The operator opts in explicitly.
+if [[ "${VAULT_UPDATER_REPOINT:-false}" == "true" ]]; then
+  RENDER_ARGS+=("--repoint")
+  echo "publish-update: REPOINT enabled — the target URL will be replaced for version ${VERSION}" >&2
 fi
 
 "$PYTHON" "$SCRIPT_DIR/render-manifest.py" "${RENDER_ARGS[@]}"

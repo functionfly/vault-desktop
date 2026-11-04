@@ -22,7 +22,7 @@ artefact as a fallback for users running an unpackaged binary, where
 
 Usage:
 
-    updater-targets.py functionfly-vault-desktop_0.1.0_amd64.AppImage.tar.gz
+    updater-targets.py functionfly-vault-desktop_0.1.0_amd64.AppImage
     # -> linux-x86_64-appimage,linux-x86_64
 
 Exits 1 with an explanation when the filename cannot be mapped, so a
@@ -35,12 +35,37 @@ import os
 import re
 import sys
 
-# Artefact suffix -> (os, bundle type). The suffixes are the ones the
-# Tauri v2 bundler produces for updater artefacts.
+# Artefact suffix -> (os, bundle type).
+#
+# THESE ARE THE NAMES THE TAURI v2 BUNDLER ACTUALLY PRODUCES. Getting
+# them wrong is not a theoretical problem: the first version of this
+# table used the Tauri *v1* names (`.appimage.tar.gz`, `.deb.tar.gz`,
+# `.rpm.tar.gz`), which the v2 bundler never produces. Every real Linux
+# artefact was therefore rejected with "not a recognised updater
+# artefact", and the Linux updater channel could never have been
+# published.
+#
+# From `tauri-bundler/src/bundle.rs`:
+#
+#   // Targets the v2 updater plugin installs directly, no wrapping needed.
+#   let has_self_contained_target = package_types.iter().any(|package_type| {
+#     matches!(package_type,
+#       PackageType::AppImage | PackageType::Nsis | PackageType::WindowsMsi
+#       | PackageType::Deb | PackageType::Rpm)
+#   });
+#
+#   // the macOS app bundle is always archived, the other v1 targets only
+#   // for the legacy updater
+#   if package_types.contains(&PackageType::MacOsBundle) || has_v1_target {
+#
+# So the AppImage, deb and rpm are signed in place; the macOS .app is
+# always archived; the Windows installers are zipped. The tar.gz form
+# only exists for the legacy v1 updater, which this project does not
+# use.
 BUNDLES: list[tuple[str, str, str]] = [
-    (".appimage.tar.gz", "linux", "appimage"),
-    (".deb.tar.gz", "linux", "deb"),
-    (".rpm.tar.gz", "linux", "rpm"),
+    (".appimage", "linux", "appimage"),
+    (".deb", "linux", "deb"),
+    (".rpm", "linux", "rpm"),
     (".app.tar.gz", "darwin", "app"),
     (".msi.zip", "windows", "msi"),
     (".nsis.zip", "windows", "nsis"),

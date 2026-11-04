@@ -12,7 +12,7 @@ side-car.
 | `KEY-FINGERPRINT.txt`                                    | Public key path, SHA-256, algorithm, rotation procedure. Reference for the rotating signer.                            |
 | `load-updater-env.sh`                                    | Sources `VAULT_UPDATER_PUBKEY` + `TAURI_SIGNING_PRIVATE_KEY_*` from `~/.tauri/` into the current shell.                |
 | `verify-updater-keypair.sh`                              | Asserts the verification key in `tauri.conf.json` and the release signing key are the same keypair. Fails the release if they drift. |
-| `provision-r2-bucket.sh`                                 | One-time bootstrap: head-bucket → versioning → 30-day noncurrent lifecycle → read-only CORS → write/read/delete probe. |
+| `provision-r2-bucket.sh`                                 | One-time bootstrap: head-bucket → versioning → 30-day noncurrent lifecycle → read-only CORS → public custom domain → write/read/delete probe → anonymous public-reachability probe. |
 | `publish-update.sh <channel> <version> <side-car> <sig> [target]` | Uploads one side-car + `.sig` and merges that platform's entry into the channel manifest.                    |
 | `publish-updater-assets.sh <channel> <version> <dir>`   | Publishes every updater artefact in a directory, building one manifest across all platforms.                             |
 | `render-manifest.py`                                     | The manifest contract, in one place. Emits valid JSON and refuses a target triple, a non-base64 signature, or a repointed platform. |
@@ -118,10 +118,55 @@ What needs an admin-scoped token:
   probe) — all return `AccessDenied` with the dev token. Create a separate
   admin-scoped token in the Cloudflare Dashboard, then re-run.
 
+## The public custom domain
+
+The bucket must be served from a hostname the updater can reach
+**anonymously**. It cannot use the S3 API: an installed client has no
+credentials, it just fetches
+`https://updates.functionfly.com/vault/<channel>/manifest.json`.
+
+So `provision-r2-bucket.sh` attaches `updates.functionfly.com` as an R2
+custom domain (Step 5) and then probes the public path with an anonymous
+GET (Step 7). Two things to know:
+
+- **The domain must be attached in the same Cloudflare account as the DNS
+  zone.** The bucket is in account `<R2 account id — see the private runbook>`,
+  which owns `functionfly.com`. Attaching from any other account is
+  refused by Cloudflare.
+- **Attaching it needs a Cloudflare API token with R2 write scope**
+  (`CLOUDFLARE_API_TOKEN` + `CF_ZONE_ID`), separate from the object-level
+  R2 credentials. Without them the script skips the step with a loud
+  warning rather than pretending the bucket is reachable.
+
+The host is the single variable `VAULT_UPDATER_PUBLIC_HOST`, used by both
+the provisioning script and the manifest's `url` fields. They must agree:
+a manifest whose URLs name a hostname the bucket is not attached to serves
+404s to every client while looking perfectly healthy in the bucket.
+
+### Repairing a manifest published against the wrong host
+
+`render-manifest.py` refuses to repoint a target that already has a URL
+for the same version — repointing a LIVE version would serve different
+bytes to clients that already cached the manifest.
+
+If the published manifest named the wrong host (and was therefore never
+reachable), repair it deliberately:
+
+```bash
+VAULT_UPDATER_REPOINT=true \
+R2_ACCOUNT_ID=… R2_ACCESS_KEY_ID=… R2_SECRET_ACCESS_KEY=… \
+  ./scripts/release/publish-update.sh beta 0.1.0 \
+      ./functionfly-vault-desktop_0.1.0_amd64.AppImage \
+      ./functionfly-vault-desktop_0.1.0_amd64.AppImage.sig
+```
+
+`VAULT_UPDATER_REPOINT=true` passes `--repoint` to the renderer. It is
+off by default, and the release test suite asserts that it stays off.
+
 ## Channel/version format
 
 - `channel` ∈ {`stable`, `beta`}. URL layout:
-  `https://updates.functionfly.app/vault/{channel}/manifest.json`
+  `https://updates.functionfly.com/vault/{channel}/manifest.json`
   (the channel's static manifest — the plugin substitutes only
   `{{current_version}}`, `{{target}}`, `{{arch}}` and `{{bundle_type}}`;
   there is no `{{target_version}}` placeholder).
@@ -139,11 +184,11 @@ What needs an admin-scoped token:
   "notes": "vault 0.1.2 (channel: stable)",
   "platforms": {
     "linux-x86_64-appimage": {
-      "url": "https://updates.functionfly.app/vault/stable/0.1.2/functionfly-vault-desktop_0.1.2_amd64.AppImage.tar.gz",
+      "url": "https://updates.functionfly.com/vault/stable/0.1.2/functionfly-vault-desktop_0.1.2_amd64.AppImage.tar.gz",
       "signature": "<the base64 minisign signature, i.e. the content of the .sig file>"
     },
     "linux-x86_64": {
-      "url": "https://updates.functionfly.app/vault/stable/0.1.2/functionfly-vault-desktop_0.1.2_amd64.AppImage.tar.gz",
+      "url": "https://updates.functionfly.com/vault/stable/0.1.2/functionfly-vault-desktop_0.1.2_amd64.AppImage.tar.gz",
       "signature": "<the same base64 minisign signature>"
     }
   }

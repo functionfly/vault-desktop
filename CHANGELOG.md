@@ -92,7 +92,7 @@ list_audit_by_action, list_audit_by_actor
 - Two channels: `stable` and `beta`. Per-channel endpoint env vars
   (`VAULT_UPDATER_STABLE_URL`, `VAULT_UPDATER_BETA_URL`) default to
   the canonical R2 path layout
-  `https://updates.functionfly.app/vault/{channel}/manifest.json`
+  `https://updates.functionfly.com/vault/{channel}/manifest.json`
   so a vanilla binary still works once the R2 bucket is provisioned.
 - New IPC: `vault_check_update(channel)` returns
   `{ result: "up_to_date" }` or `{ result: "available", version,

@@ -4,7 +4,7 @@
   "notes": "vault 0.0.1 (channel: stable)",
   "platforms": {
     "linux-x86_64": {
-      "url": "https://updates.functionfly.app/vault/stable/0.0.1/functionfly-vault-desktop_0.0.1.tar.gz",
+      "url": "https://updates.functionfly.com/vault/stable/0.0.1/functionfly-vault-desktop_0.0.1.tar.gz",
       "signature": "dW50cnVzdGVkIGNvbW1lbnQ6IHNpZ25hdHVyZSBmcm9tIHRhdXJpIHNlY3JldCBrZXkKUlVUNytjQ0QwTlM4QzUvVmFWTkV1R0VscEhhTjlDRUtBZ0pFN0pVQ1R6YXY5SzhPQ1ZmZnhpRzNvb3BoNkgxQXJLOXFhWEFHc2cwRi9MRTRDWEVIWVY1STloTVBPNE1XSGdNPQp0cnVzdGVkIGNvbW1lbnQ6IHRpbWVzdGFtcDoxNzkzNjg3NDA3CWZpbGU6cGF5bG9hZC5iaW4KQjd1RWRtMk1KVW9yRUJ1dHNCZ0RvUW5paXZFSWlrQjR2Y0pROTlMciswQ082R2FUeFpSYVBnRFBLV1c2MEJZTFd1S2tsMnZ1eWU3dG9WTThsN1BqRHc9PQo="
     }
   }

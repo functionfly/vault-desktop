@@ -96,4 +96,10 @@ tempfile = "3"
 # orchestrator. Pinned to a pre-1.0 line to stay on the same major as the
 # `orchestrator-api` test suite.
 mockito = "1.7.2"
+# `minisign-verify` is the crate `tauri-plugin-updater` uses to verify an
+# update signature. It is already in the dependency graph transitively;
+# declaring it directly lets the updater artefact contract test verify a
+# real build's signature with exactly the code that will verify it at
+# runtime, rather than with a second implementation that could disagree.
+minisign-verify = "0.2.5"
 serde_json = "1.0.151"

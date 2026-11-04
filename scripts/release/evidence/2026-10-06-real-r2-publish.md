@@ -70,9 +70,9 @@ R2_BUCKET=functionfly-vault-updates ./scripts/release/publish-update.sh stable 0
 → uploading manifest   to s3://functionfly-vault-updates/vault/stable/manifest.json                                      ok
 
 ── Done ──
-  side-car:  https://updates.functionfly.app/vault/stable/0.0.1/functionfly-vault-desktop_0.0.1.tar.gz
-  signature: https://updates.functionfly.app/vault/stable/0.0.1/functionfly-vault-desktop_0.0.1.tar.gz.sig
-  manifest:  https://updates.functionfly.app/vault/stable/manifest.json
+  side-car:  https://updates.functionfly.com/vault/stable/0.0.1/functionfly-vault-desktop_0.0.1.tar.gz
+  signature: https://updates.functionfly.com/vault/stable/0.0.1/functionfly-vault-desktop_0.0.1.tar.gz.sig
+  manifest:  https://updates.functionfly.com/vault/stable/manifest.json
 exit=0
 ```
 
@@ -99,8 +99,8 @@ exit=0
   "notes": "vault 0.0.1 (channel: stable)",
   "platforms": {
     "x86_64-unknown-linux-gnu": {
-      "url": "https://updates.functionfly.app/vault/stable/0.0.1/functionfly-vault-desktop_0.0.1.tar.gz",
-      "signature": "https://updates.functionfly.app/vault/stable/0.0.1/functionfly-vault-desktop_0.0.1.tar.gz.sig"
+      "url": "https://updates.functionfly.com/vault/stable/0.0.1/functionfly-vault-desktop_0.0.1.tar.gz",
+      "signature": "https://updates.functionfly.com/vault/stable/0.0.1/functionfly-vault-desktop_0.0.1.tar.gz.sig"
     }
   }
 }

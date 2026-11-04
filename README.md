@@ -304,8 +304,8 @@ contract but with the vault-specific env-var names:
 | Env var                    | Required | Default                                                                    | Purpose                                                      |
 | -------------------------- | -------- | -------------------------------------------------------------------------- | ------------------------------------------------------------ |
 | `VAULT_UPDATER_PUBKEY`     | no       | the key compiled into the binary (see below)                               | Ed25519 public key **override** — point a build at a rotated or staging key |
-| `VAULT_UPDATER_STABLE_URL` | no       | `https://updates.functionfly.app/vault/stable/manifest.json`              | Stable-channel update manifest endpoint                      |
-| `VAULT_UPDATER_BETA_URL`   | no       | `https://updates.functionfly.app/vault/beta/manifest.json`                | Beta-channel update manifest endpoint                        |
+| `VAULT_UPDATER_STABLE_URL` | no       | `https://updates.functionfly.com/vault/stable/manifest.json`              | Stable-channel update manifest endpoint                      |
+| `VAULT_UPDATER_BETA_URL`   | no       | `https://updates.functionfly.com/vault/beta/manifest.json`                | Beta-channel update manifest endpoint                        |
 
 > **The endpoint is the channel's static manifest.** It carries no version
 > placeholder. `tauri-plugin-updater` substitutes only `{{current_version}}`,
@@ -368,7 +368,11 @@ fail-closed:
 cargo-tauri signer generate -w "$VAULT_KEY_DIR/vault-key.json"
 
 # Once per environment (staging + production) — provisions the R2 bucket
+# CF_ZONE_ID + CLOUDFLARE_API_TOKEN attach the public custom domain;
+# without them the bucket is credentialed-only and the updater cannot
+# fetch the manifest.
 R2_ACCOUNT_ID=… R2_ACCESS_KEY_ID=… R2_SECRET_ACCESS_KEY=… \
+  CF_ZONE_ID=… CLOUDFLARE_API_TOKEN=… \
   ./scripts/release/provision-r2-bucket.sh
 
 # Every release — load env, build, publish
@@ -395,7 +399,7 @@ release test suite.
 | Script                                                    | Idempotent?                      | Touches R2?                              | What it does                                                                                                                                                                                                                     |
 | --------------------------------------------------------- | -------------------------------- | ---------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `load-updater-env.sh`                                     | yes                              | no                                       | Exports `VAULT_UPDATER_PUBKEY`, `TAURI_SIGNING_PRIVATE_KEY_*`; prints a redacted manifest to stderr                                                                                                                              |
-| `provision-r2-bucket.sh`                                  | yes                              | yes                                      | Creates the updater bucket, enables versioning, applies the noncurrent-version lifecycle rule, sets CORS, runs a write+read+delete round-trip probe                                                                                  |
+| `provision-r2-bucket.sh`                                  | yes                              | yes                                      | Creates the updater bucket, enables versioning, applies the noncurrent-version lifecycle rule, sets CORS, attaches the public custom domain, runs a write+read+delete round-trip probe and an anonymous public-reachability probe       |
 | `publish-update.sh <channel> <version> <side-car> <sig> [target]` | no (idempotent at the S3 level) | yes                                      | Uploads the side-car + signature and merges that platform's entry into `vault/<channel>/manifest.json`. Accepts a comma-separated target list for a multi-arch archive. |
 | `publish-updater-assets.sh <channel> <version> <dir>`    | no                               | yes                                      | Publishes every updater artefact in a directory, building one manifest across all platforms.                                                                                                                                    |
 | `render-manifest.py`                                      | yes                              | no                                       | The manifest contract, in one place. Emits valid JSON; refuses a target triple, a non-base64 signature, or a repointed platform.                                                                                                    |
