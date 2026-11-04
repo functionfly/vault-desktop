@@ -8,15 +8,20 @@ decrypted from `.env` via dotenvx.
 
 ## Environment
 
-```
-R2_ACCOUNT_ID      = <R2 account id — see the private runbook> (account, 32 hex)
-R2_ACCESS_KEY_ID   = <R2 access key id — see the private runbook>   (32 chars, dev-scoped to one bucket)
-R2_SECRET_ACCESS_KEY = <64 chars>
-R2_ENDPOINT        = https://<R2 account id — see the private runbook>.r2.cloudflarestorage.com
-R2_BUCKET          = functionfly-vault-updates (region: WNAM)
+> **Redacted for publication.** Real account IDs, key IDs, key paths, and
+> fingerprints live in [`docs/INTERNAL.md`](../../docs/INTERNAL.md). The values
+> below are shape-accurate placeholders so this transcript still documents *what*
+> was run without handing out live infrastructure identifiers.
 
-VAULT_UPDATER_PUBKEY  = dW50cnVzdGVkIGNvbW1lbnQ6IG1pbm… (152 chars, Ed25519 pub)
-TAURI_SIGNING_PRIVATE_KEY_PATH = <operator key dir>/vault-key.json (mode 0600)
+```
+R2_ACCOUNT_ID      = <32 hex, see docs/INTERNAL.md>
+R2_ACCESS_KEY_ID   = <32 chars, dev-scoped to one bucket>
+R2_SECRET_ACCESS_KEY = <64 chars>
+R2_ENDPOINT        = https://<account-id>.r2.cloudflarestorage.com
+R2_BUCKET          = <bucket> (region: WNAM)
+
+VAULT_UPDATER_PUBKEY  = <152 chars, Ed25519 pub>
+TAURI_SIGNING_PRIVATE_KEY_PATH = <build-host>/.tauri/vault-key.json (mode 0600)
 TAURI_SIGNING_PRIVATE_KEY_PASSWORD = <64-char random, mode 0400>
 ```
 
@@ -36,7 +41,7 @@ export AWS_SECRET_ACCESS_KEY="$R2_SECRET_ACCESS_KEY"
 export AWS_DEFAULT_REGION=auto
 
 # 2. Load updater env (vault signing key + pubkey + stable/beta URLs)
-cd ~/projects/vault-desktop
+cd <path-to>/vault-desktop
 source scripts/release/load-updater-env.sh
 
 # 3. Build a 4-KB stub side-car + 128-B random sig
@@ -81,6 +86,12 @@ exit=0
 
 `vault/stable/manifest.json` body (read back via `aws s3 cp`):
 
+> **Superseded on 2026-11-03.** The body below is kept as a record of what
+> was published on 2026-10-06. It was not a valid updater manifest: the
+> `platforms` key was a Rust target triple the plugin never looks up, and
+> `signature` held a URL instead of the signature content. The current
+> schema is in [`../README.md`](../README.md#tauri-updater-schema).
+
 ```json
 {
   "version": "0.0.1",
@@ -95,8 +106,9 @@ exit=0
 }
 ```
 
-Schema matches `tauri-plugin-updater` v2 contract (`version`, `pub_date`,
-`notes`, `platforms.<triple>.{url,signature}`).
+The shape (`version`, `pub_date`, `notes`, `platforms.<key>.{url,signature}`)
+matches the `tauri-plugin-updater` v2 manifest structure. The *values* were
+wrong — see the note above.
 
 ## Cleanup
 

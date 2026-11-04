@@ -31,9 +31,6 @@ permissions = [
   # security sign-off before this is widened.
   "core:window:allow-theme",
   "core:event:default",
-  "dialog:default",
-  "os:default",
-  "process:default",
   # `tauri-plugin-updater` — allows the Rust core to read its
   # configuration and download/stage updates. The plugin never opens
   # external URLs from the webview; `check`/`download_and_install` run
@@ -56,3 +53,8 @@ permissions = [
 #   http:*                    — all HTTP is in the Rust core
 #   global-shortcut:*         — unused
 #   clipboard:*               — explicit reveal action in Rust
+#   dialog:*, os:*, process:* — the corresponding plugins were never
+#                                registered in `lib.rs` and no webview code
+#                                called them. Their permissions were removed
+#                                on 2026-11-03; re-adding a plugin means
+#                                registering it in `lib.rs` first.

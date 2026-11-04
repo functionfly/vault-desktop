@@ -1,0 +1,167 @@
+# CodeQL — static analysis for both languages in the vault.
+#
+# The Rust core holds the crypto primitives and the HTTP client that carries
+# the bearer token, so it is the surface that matters most. The TypeScript
+# layer is the untrusted webview: it parses orchestrator responses and must
+# never be trusted to reach the keychain directly.
+#
+# ── WHY THIS WORKFLOW CURRENTLY SKIPS ITSELF ───────────────────────────────
+# Code scanning requires GitHub Code Security, which this repository does not
+# have. It is private, and the owner org sits under an enterprise policy that
+# does not grant it. Every analyze step therefore fails with:
+#
+#   ##[error]Please verify that the necessary features are enabled: Code
+#   Security must be enabled for this repository to use code scanning.
+#
+# Leaving that as a permanent red check is worse than not having the check:
+# it trains people to ignore failures, and it buries the ones that matter.
+# Deleting the workflow would instead lose the analysis the moment someone
+# enables the feature.
+#
+# So both language jobs first probe whether code scanning is available and
+# skip themselves with a visible note when it is not. Turn Code Security on
+# under:
+#
+#   Settings -> Code security and analysis -> Enable
+#
+# and the next run performs real analysis with no further change here.
+name: CodeQL
+
+on:
+  push:
+    branches: [main, develop]
+  pull_request:
+    branches: [main, develop]
+  schedule:
+    # Weekly, Monday 05:32 UTC. Off the hour to avoid the GitHub Actions
+    # scheduling congestion on the hour.
+    - cron: '32 5 * * 1'
+
+permissions:
+  contents: read
+  security-events: write
+  actions: read
+
+concurrency:
+  group: codeql-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  # Decides once whether results can actually be uploaded. Both language
+  # jobs read this rather than each probing independently.
+  detect:
+    name: detect code scanning availability
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      enabled: ${{ steps.check.outputs.enabled }}
+    steps:
+      - name: Probe the code-scanning analyses endpoint
+        id: check
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPO: ${{ github.repository }}
+        run: |
+          set -uo pipefail
+
+          # 200 -> feature on. 403 -> Code Security is not provisioned, which
+          # is what this repo returns:
+          #   Code Security must be enabled for this repository to use code
+          #   scanning. (HTTP 403)
+          # 404 also means not enabled (older API versions).
+          # Anything else (rate limit, token scope) is treated as "unknown"
+          # and left enabled, so a transient API problem never silently
+          # disables scanning.
+          code="$(curl -s -o /dev/null -w '%{http_code}' \
+            -H "Authorization: Bearer $GH_TOKEN" \
+            -H "Accept: application/vnd.github+json" \
+            "https://api.github.com/repos/$REPO/code-scanning/analyses")"
+
+          case "$code" in
+            200)
+              echo "enabled=true" >> "$GITHUB_OUTPUT"
+              ;;
+            403|404)
+              echo "enabled=false" >> "$GITHUB_OUTPUT"
+              echo "::notice::Code Security is not enabled for $REPO (HTTP $code); skipping CodeQL."
+              ;;
+            *)
+              echo "enabled=true" >> "$GITHUB_OUTPUT"
+              echo "::warning::Unexpected status $code probing code scanning; assuming enabled."
+              ;;
+          esac
+
+      - name: Explain the skip
+        if: steps.check.outputs.enabled != 'true'
+        shell: bash
+        run: |
+          cat >> "$GITHUB_STEP_SUMMARY" <<'EOF'
+          ### CodeQL skipped — Code Security is not enabled
+
+          Static analysis is **not running** for this push. It starts
+          automatically once Code Security is enabled:
+
+          > Settings -> Code security and analysis -> Enable
+
+          Private repositories need GitHub Advanced Security; public ones get
+          code scanning at no cost.
+          EOF
+
+  analyze-rust:
+    name: Analyze Rust
+    needs: detect
+    if: needs.detect.outputs.enabled == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: github/codeql-action/init@v3
+        with:
+          languages: rust
+          # `none`, NOT `autobuild`. Rust has no CodeQL extractor shim that
+          # autobuild knows how to invoke, so `build-mode: autobuild` fails at
+          # `database init` with:
+          #   "A fatal error occurred: Rust does not support the autobuild
+          #    build mode. Please try using one of the following build modes
+          #    instead: none."
+          # `none` analyses the source tree without compiling. For this crate
+          # that costs no material coverage: the taint-relevant logic (HTTP
+          # header assembly in api.rs, zeroizing in store.rs) is plain Rust
+          # the extractor handles from source, and the crypto primitives all
+          # live in the audited aes-gcm/pbkdf2/sha2 crates.
+          #
+          # If a future version adds proc macros needing expansion for
+          # accuracy, switch to `build-mode: manual` and point a build step at
+          # `cargo build --all-targets` under src-tauri.
+          build-mode: none
+          config-file: ./.github/codeql/config.yml
+
+      - uses: github/codeql-action/analyze@v3
+        with:
+          category: /language:rust
+
+  analyze-javascript:
+    name: Analyze TypeScript
+    needs: detect
+    if: needs.detect.outputs.enabled == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: github/codeql-action/init@v3
+        with:
+          languages: javascript-typescript
+          # `none` is correct here: the webview is a plain TS/Vite project with
+          # no framework-specific build for CodeQL to observe, so letting
+          # autobuild guess adds several minutes and no coverage. (It also
+          # emits a harmless "Skipping path node_modules, which does not
+          # exist" because this job deliberately installs no dependencies.)
+          build-mode: none
+          config-file: ./.github/codeql/config.yml
+
+      - uses: github/codeql-action/analyze@v3
+        with:
+          category: /language:javascript-typescript

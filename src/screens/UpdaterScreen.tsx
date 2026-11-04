@@ -82,10 +82,10 @@ export function UpdaterScreen() {
       <header className="p-4 border-b border-neutral-200 dark:border-neutral-800">
         <h2 className="text-lg font-medium">Updater</h2>
         <p className="text-sm text-neutral-500">
-          Signed auto-update. The Rust core refuses to check for updates unless{" "}
-          <code>VAULT_UPDATER_PUBKEY</code> is set; a missing or invalid signing
-          key surfaces a typed <code>missing_pubkey</code> error rather than
-          silently downloading an unsigned bundle.
+          Signed auto-update. The verification key is compiled into this build,
+          so the Rust core can check for updates with no configuration; a
+          missing or invalid key surfaces a typed <code>missing_pubkey</code>{" "}
+          error rather than silently downloading an unsigned bundle.
         </p>
       </header>
 
@@ -186,8 +186,9 @@ export function UpdaterScreen() {
               Common causes:
               <ul className="list-disc pl-5 mt-1 space-y-0.5">
                 <li>
-                  <code>missing_pubkey</code> — the binary was built without{" "}
-                  <code>VAULT_UPDATER_PUBKEY</code> set.
+                  <code>missing_pubkey</code> — this build carries no
+                  verification key, and no{" "}
+                  <code>VAULT_UPDATER_PUBKEY</code> override was set.
                 </li>
                 <li>
                   <code>invalid_endpoint</code> — the per-channel URL env var is

@@ -76,19 +76,14 @@ pub struct StoredSession {
 /// Where a session is persisted. The UI shows this as a small badge so the
 /// user can tell at a glance whether their tokens live behind the OS
 /// keyring or in the encrypted file fallback (e.g. on a headless Linux box).
-#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, serde::Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum BackendKind {
     OsKeychain,
     FileFallback,
     /// Nothing persisted yet.
+    #[default]
     Empty,
-}
-
-impl Default for BackendKind {
-    fn default() -> Self {
-        BackendKind::Empty
-    }
 }
 
 pub struct SecretStore {
@@ -105,6 +100,12 @@ pub struct SecretStore {
     /// Most recent `BackendKind` we wrote. Cached so `describe()` can report
     /// the right thing without re-touching the keychain on every render.
     last_backend: Arc<Mutex<BackendKind>>,
+}
+
+impl Default for SecretStore {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl SecretStore {
@@ -322,17 +323,14 @@ impl SecretStore {
 }
 
 fn entry(account: &str) -> Result<keyring::Entry, StoreError> {
-    keyring::Entry::new(KEYRING_SERVICE, account)
-        .map_err(|e| StoreError::Keychain(e.to_string()))
+    keyring::Entry::new(KEYRING_SERVICE, account).map_err(|e| StoreError::Keychain(e.to_string()))
 }
 
 fn set_secret(account: &str, value: &str) -> Result<(), StoreError> {
-    entry(account)?
-        .set_password(value)
-        .map_err(|e| match e {
-            keyring::Error::NoEntry => StoreError::NotFound,
-            other => StoreError::Keychain(other.to_string()),
-        })
+    entry(account)?.set_password(value).map_err(|e| match e {
+        keyring::Error::NoEntry => StoreError::NotFound,
+        other => StoreError::Keychain(other.to_string()),
+    })
 }
 
 fn delete_secret(account: &str) -> Result<(), StoreError> {
@@ -401,11 +399,15 @@ struct FileFallback {
 
 impl FileFallback {
     fn open() -> Result<Self, String> {
-        let base = data_dir()?
-            .join("functionfly")
-            .join("vault-desktop");
+        let base = data_dir()?.join("functionfly").join("vault-desktop");
         std::fs::create_dir_all(base.join("accounts"))
             .map_err(|e| format!("create_dir_all({}) failed: {e}", base.display()))?;
+        // The fallback holds the encrypted session and the machine key that
+        // encrypts it. On a multi-user machine the default directory mode
+        // (0755 on Unix, inherited ACLs on Windows) is enough for another
+        // local account to read the ciphertext and the key material.
+        restrict_to_owner(&base)?;
+        restrict_to_owner(&base.join("accounts"))?;
         Ok(Self { base })
     }
 
@@ -421,7 +423,11 @@ impl FileFallback {
     /// to build a path from it is the safe response. (Pinned by
     /// `file_fallback_rejects_traversal_account_names`.)
     fn account_path(&self, account: &str) -> Result<PathBuf, StoreError> {
-        if account.is_empty() || account.contains('/') || account.contains('\\') || account.contains("..") {
+        if account.is_empty()
+            || account.contains('/')
+            || account.contains('\\')
+            || account.contains("..")
+        {
             return Err(StoreError::FileFallback(format!(
                 "refusing to build a path for unsafe account name {account:?}"
             )));
@@ -533,8 +539,41 @@ impl FileFallback {
 fn atomic_write(path: &Path, bytes: &[u8]) -> Result<(), String> {
     let tmp = path.with_extension("tmp");
     std::fs::write(&tmp, bytes).map_err(|e| format!("write {}: {e}", tmp.display()))?;
+    // The file inherits the umask-derived mode on creation, which is
+    // usually 0644 — world-readable. The bytes are encrypted, but the
+    // machine key is written the same way, so tighten the mode before
+    // the content is in place.
+    restrict_to_owner_file(&tmp)?;
     std::fs::rename(&tmp, path)
         .map_err(|e| format!("rename {} -> {}: {e}", tmp.display(), path.display()))?;
+    Ok(())
+}
+
+/// Restricts a path to the owning user on Unix. A no-op on Windows, where
+/// the per-user data directory already inherits ACLs that exclude other
+/// accounts, and where a POSIX mode bit has no equivalent.
+#[cfg(unix)]
+fn restrict_to_owner(path: &Path) -> Result<(), String> {
+    use std::os::unix::fs::PermissionsExt;
+    std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o700))
+        .map_err(|e| format!("chmod 700 {}: {e}", path.display()))
+}
+
+/// Restricts a file to the owning user on Unix. A no-op on Windows.
+#[cfg(unix)]
+fn restrict_to_owner_file(path: &Path) -> Result<(), String> {
+    use std::os::unix::fs::PermissionsExt;
+    std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600))
+        .map_err(|e| format!("chmod 600 {}: {e}", path.display()))
+}
+
+#[cfg(not(unix))]
+fn restrict_to_owner(_path: &Path) -> Result<(), String> {
+    Ok(())
+}
+
+#[cfg(not(unix))]
+fn restrict_to_owner_file(_path: &Path) -> Result<(), String> {
     Ok(())
 }
 
@@ -614,7 +653,10 @@ mod tests {
         let s = SecretStore::new();
         s.lock_passphrase("first").await;
         s.lock_passphrase("second").await;
-        assert_eq!(s.with_passphrase(|p| p.to_string()).await.unwrap(), "second");
+        assert_eq!(
+            s.with_passphrase(|p| p.to_string()).await.unwrap(),
+            "second"
+        );
     }
 
     #[tokio::test]
@@ -651,8 +693,10 @@ mod tests {
         // Write the same three fields `SecretStore::save_session` writes.
         fb.write(KEY_USER_BASE_URL, "https://api.example.com/v1")
             .expect("write base_url");
-        fb.write(KEY_USER_ACCESS, "access-xyz").expect("write access");
-        fb.write(KEY_USER_REFRESH, "refresh-abc").expect("write refresh");
+        fb.write(KEY_USER_ACCESS, "access-xyz")
+            .expect("write access");
+        fb.write(KEY_USER_REFRESH, "refresh-abc")
+            .expect("write refresh");
 
         // Round-trip.
         assert_eq!(
@@ -708,13 +752,7 @@ mod tests {
     fn file_fallback_rejects_path_traversal_account_names() {
         let tmp = std::env::temp_dir().join("vault-desktop-traversal-test");
         let fb = FileFallback { base: tmp };
-        for bad in [
-            "../../etc/passwd",
-            "..",
-            "a/b",
-            "a\\b",
-            "",
-        ] {
+        for bad in ["../../etc/passwd", "..", "a/b", "a\\b", ""] {
             assert!(
                 matches!(fb.account_path(bad), Err(StoreError::FileFallback(_))),
                 "expected {bad:?} to be refused, got {:?}",
@@ -725,6 +763,50 @@ mod tests {
         let ok = fb.account_path(KEY_USER_ACCESS).unwrap();
         assert!(ok.to_string_lossy().contains("accounts"));
         assert!(!ok.to_string_lossy().contains(".."));
+    }
+
+    /// The fallback directory and the files in it must not be readable by
+    /// other local accounts. The machine key encrypts the session, so a
+    /// world-readable key file is the same as a world-readable session.
+    #[cfg(unix)]
+    #[test]
+    fn file_fallback_is_owner_only_on_unix() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let tmp = std::env::temp_dir().join(format!(
+            "vault-desktop-perms-{}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let base = tmp.join("functionfly").join("vault-desktop");
+        std::fs::create_dir_all(base.join("accounts")).unwrap();
+
+        restrict_to_owner(&base).expect("chmod base");
+        restrict_to_owner(&base.join("accounts")).expect("chmod accounts");
+
+        let dir_mode = std::fs::metadata(&base).unwrap().permissions().mode() & 0o777;
+        assert_eq!(dir_mode, 0o700, "base dir mode is {:o}", dir_mode);
+
+        let accounts_mode = std::fs::metadata(base.join("accounts"))
+            .unwrap()
+            .permissions()
+            .mode()
+            & 0o777;
+        assert_eq!(
+            accounts_mode, 0o700,
+            "accounts dir mode is {:o}",
+            accounts_mode
+        );
+
+        // A file written through atomic_write must be 0600 too.
+        let key_path = base.join("machine.key");
+        atomic_write(&key_path, &[7u8; KEY_LENGTH]).expect("write key");
+        let file_mode = std::fs::metadata(&key_path).unwrap().permissions().mode() & 0o777;
+        assert_eq!(file_mode, 0o600, "machine key mode is {:o}", file_mode);
+
+        let _ = std::fs::remove_dir_all(&tmp);
     }
 
     /// A tampered ciphertext must fail the GCM auth tag rather than decrypt
@@ -741,11 +823,7 @@ mod tests {
         ));
         let fb = FileFallback { base: tmp.clone() };
         std::fs::create_dir_all(tmp.join("accounts")).unwrap();
-        std::fs::write(
-            tmp.join("machine.key"),
-            [7u8; KEY_LENGTH],
-        )
-        .unwrap();
+        std::fs::write(tmp.join("machine.key"), [7u8; KEY_LENGTH]).unwrap();
 
         fb.write("acct", "super-secret-token").unwrap();
         let path = fb.account_path("acct").unwrap();
@@ -761,4 +839,3 @@ mod tests {
         let _ = std::fs::remove_dir_all(&tmp);
     }
 }
-

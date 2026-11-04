@@ -236,10 +236,12 @@ export const ipc = {
     invoke<Record<string, unknown>>("list_audit", { secretId, limit }),
 
   // ── Updater (signed auto-update; fail-closed) ──────────────────────────
-  // The Rust core enforces a `VAULT_UPDATER_PUBKEY` requirement and
-  // refuses to check for updates without a valid Ed25519 pubkey. See
+  // The Rust core refuses to check for updates without a valid Ed25519
+  // pubkey. It is compiled into the binary from
+  // `plugins.updater.pubkey`; `VAULT_UPDATER_PUBKEY` is an operator
+  // override that takes precedence. See
   // `src-tauri/src/updater.rs::UpdaterConfig::from_env` for the
-  // contract. When the env var is unset, the response is a typed
+  // contract. When no key is available at all, the response is a typed
   // `{ code: "missing_pubkey", ... }` envelope rather than a stack
   // trace so the React UI can render a clear "updater disabled"
   // state.
@@ -251,30 +253,20 @@ export const ipc = {
 } as const;
 
 // ── Input shapes ────────────────────────────────────────────────────────
-
-export interface CreateSecretInput {
-  name: string;
-  secret_type: string;
-  plaintext: string;
-  namespace?: string;
-  description?: string;
-  scopes?: string[];
-  expires_at?: string | null;
-}
-
-export interface UpdateSecretInput {
-  id: string;
-  name?: string;
-  description?: string;
-  scopes?: string[];
-  namespace?: string;
-}
-
-export interface RotateSecretInput {
-  id: string;
-  plaintext: string;
-  reason?: string;
-}
+//
+// `CreateSecretInput`, `UpdateSecretInput` and `RotateSecretInput` are
+// declared once, in the "write path" section above. They were previously
+// declared twice — TypeScript silently merged the two declarations, so
+// the effective type accepted fields (`expires_at` on create,
+// `namespace` on update) that the Rust command structs never read. A
+// caller could set them and watch them vanish without any error.
+//
+// The shapes below mirror the Rust command structs exactly:
+//
+//   CreateSecretInput  { name, description, secret_type, plaintext,
+//                        namespace, scopes }
+//   UpdateSecretInput  { id, name, description, scopes }
+//   RotateSecretInput  { id, plaintext, reason }
 
 export interface GenerateTokenInput {
   id: string;

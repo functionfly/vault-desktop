@@ -1,0 +1,416 @@
+# Signed release pipeline.
+#
+# Triggered by the `v*` tag that release-please creates when the release PR is
+# merged into `main`. This is the ONLY workflow that ever receives the updater
+# signing key.
+#
+#   1. Verify the tag matches the versions in package.json / Cargo.toml /
+#      tauri.conf.json. A mismatch means the release PR failed to bump
+#      something and the artefacts would be mislabelled.
+#   2. Build + sign installers on a three-OS matrix (tauri-action produces the
+#      `.sig` side-cars the updater requires).
+#   3. Publish a GitHub Release with the extracted CHANGELOG section as notes.
+#   4. Optionally publish the updater manifest to the R2 bucket, so installed
+#      clients can discover the new version.
+#
+# Secrets required:
+#   TAURI_SIGNING_PRIVATE_KEY          (Ed25519 private key PEM)
+#   TAURI_SIGNING_PRIVATE_KEY_PASSWORD
+#   APPLE_CERTIFICATE_P12 / _PASSWORD  (optional, notarised macOS)
+#   APPLE_SIGNING_IDENTITY, APPLE_ID, APPLE_PASSWORD, APPLE_TEAM_ID (optional)
+#   WINDOWS_CERTIFICATE_PFX, WINDOWS_CERTIFICATE_PASSWORD             (optional)
+#   R2_ACCOUNT_ID, R2_ACCESS_KEY_ID, R2_SECRET_ACCESS_KEY, R2_BUCKET (optional)
+#     — only needed when the updater channel is published.
+#
+# If the signing key is absent the job fails closed: an unsigned release is
+# worse than no release, because tauri-plugin-updater would refuse to install
+# it at runtime anyway.
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Existing v* tag to re-run (e.g. v0.1.1)'
+        required: true
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  verify:
+    name: verify tag matches sources
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    outputs:
+      version: ${{ steps.check.outputs.version }}
+      tag: ${{ steps.check.outputs.tag }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Resolve tag and compare against every version source
+        id: check
+        shell: bash
+        env:
+          # On a tag push GITHUB_REF is refs/tags/vX.Y.Z. On workflow_dispatch
+          # it is a branch ref, so fall back to the tag input the operator
+          # supplied. Normalising to a bare `vX.Y.Z` here means every
+          # downstream job can use `needs.verify.outputs.tag` uniformly.
+          DISPATCH_TAG: ${{ inputs.tag }}
+        run: |
+          set -euo pipefail
+
+          if [ -n "$DISPATCH_TAG" ]; then
+            TAG="$DISPATCH_TAG"
+          else
+            TAG="${GITHUB_REF#refs/tags/}"
+          fi
+
+          if [[ "$TAG" != v* ]]; then
+            echo "::error::Expected a v-prefixed tag, got '${TAG}'."
+            exit 1
+          fi
+
+          TAG_VERSION="${TAG#v}"
+          echo "Tag version: ${TAG_VERSION}"
+          echo "tag=${TAG}" >> "$GITHUB_OUTPUT"
+
+          # Every duplicated version source. They are read with the same
+          # jq/grep used by release-please's `extra-files` update so a bump
+          # that only landed in one file is caught here rather than shipped.
+          #
+          # jq is pinned first so a CRLF ever reaching the repo (a Windows
+          # commit made before .gitattributes existed, or a manual edit) is
+          # stripped before comparison rather than making "0.1.0\r" fail the
+          # check for no real reason.
+          PKG="$(jq -r .version package.json | tr -d '\r')"
+          CARGO="$(awk '/^\[package\]/{f=1;next} /^\[/{f=0} f && /^version *=/ {gsub(/["\r ]/,""); sub(/^version=/,""); print; exit}' src-tauri/Cargo.toml)"
+          TAURI="$(jq -r .version src-tauri/tauri.conf.json | tr -d '\r')"
+
+          echo "  package.json         = ${PKG}"
+          echo "  src-tauri/Cargo.toml = ${CARGO}"
+          echo "  src-tauri/tauri.conf = ${TAURI}"
+
+          failed=0
+          for pair in "package.json:${PKG}" "src-tauri/Cargo.toml:${CARGO}" "src-tauri/tauri.conf.json:${TAURI}"; do
+            file="${pair%%:*}"
+            value="${pair##*:}"
+            if [ "$value" != "$TAG_VERSION" ]; then
+              echo "::error::${file} says ${value} but the tag says ${TAG_VERSION}."
+              failed=1
+            fi
+          done
+
+          if [ "$failed" -ne 0 ]; then
+            echo "::error::Version sources are out of sync. release-please should keep these in sync; re-tag only after fixing the release PR."
+            exit 1
+          fi
+
+          echo "version=${TAG_VERSION}" >> "$GITHUB_OUTPUT"
+
+  build:
+    # `verify` above already checked out and compared every version source;
+    # this job re-checks out the tree itself to build from it.
+    name: bundle (${{ matrix.os }})
+    needs: verify
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: macos-latest
+            args: --target universal-apple-darwin
+          - os: windows-latest
+            args: ''
+          - os: ubuntu-latest
+            args: ''
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ runner.os == 'macOS' && 'universal-apple-darwin' || '' }}
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri
+
+      - uses: oven-sh/setup-bun@v1
+        with:
+          bun-version: latest
+
+      - name: Cache bun dependencies
+        uses: actions/cache@v4
+        with:
+          path: ~/.bun/install/cache
+          key: bun-${{ runner.os }}-${{ hashFiles('bun.lock') }}
+          restore-keys: |
+            bun-${{ runner.os }}-
+
+      - name: Install Linux Tauri deps
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libwebkit2gtk-4.1-dev build-essential libssl-dev \
+            libgtk-3-dev libayatana-appindicator3-dev librsvg2-dev \
+            libsecret-1-dev patchelf
+
+      - name: Install JS dependencies
+        run: bun install --frozen-lockfile
+
+      - name: Build webview bundle
+        # tauri-action runs `beforeBuildCommand` from tauri.conf.json itself,
+        # but building first keeps the log readable and fails fast on TS
+        # errors before a 10-minute Rust compile.
+        run: bunx vite build
+
+      # Checks that the key is actually present so the failure message names
+      # the missing secret instead of surfacing as a confusing Tauri build
+      # error 15 minutes in.
+      - name: Assert signing material is present
+        shell: bash
+        env:
+          SIGNING_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+        run: |
+          if [ -z "$SIGNING_KEY" ]; then
+            echo "::error::TAURI_SIGNING_PRIVATE_KEY is not set. Refusing to publish an unsigned release — tauri-plugin-updater would reject it at runtime anyway."
+            exit 1
+          fi
+
+      # The updater's verification key lives in `plugins.updater.pubkey`
+      # (tauri.conf.json) while the artefacts are signed with
+      # `TAURI_SIGNING_PRIVATE_KEY`. If those two ever drift apart, the
+      # release still builds and still publishes — and every update
+      # fails signature verification on a user's machine. This gate
+      # turns that silent breakage into a failed build.
+      - name: Assert the updater keypair matches
+        shell: bash
+        env:
+          VAULT_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          VAULT_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+        run: |
+          set -euo pipefail
+          if ! ./scripts/release/verify-updater-keypair.sh; then
+            echo "::error::The updater public key does not match the signing key."
+            exit 1
+          fi
+
+      - name: Build + sign bundles
+        uses: tauri-apps/tauri-action@v0
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # Fail closed: tauri-action must never silently produce an unsigned
+          # artefact if this key is malformed.
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+          APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE_P12 }}
+          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+          APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+          WINDOWS_CERTIFICATE: ${{ secrets.WINDOWS_CERTIFICATE_PFX }}
+          WINDOWS_CERTIFICATE_PASSWORD: ${{ secrets.WINDOWS_CERTIFICATE_PASSWORD }}
+        with:
+          projectPath: .
+          # A bare tag, NOT ${{ github.ref }} — tauri-action takes this value
+          # verbatim as the release tag, and passing refs/tags/v0.1.1 would
+          # create a release tagged "refs/tags/v0.1.1".
+          tagName: ${{ needs.verify.outputs.tag }}
+          releaseName: FunctionFly Vault ${{ needs.verify.outputs.version }}
+          # Left as a draft on purpose: a human reviews the three platform
+          # installers before they become the advertised download. The
+          # publish-github-release job below attaches the changelog notes;
+          # flipping out of draft stays a deliberate human action.
+          releaseDraft: true
+          releasePrerelease: false
+          args: ${{ matrix.args }}
+
+  publish-github-release:
+    name: publish GitHub release
+    needs: [verify, build]
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Extract this release's CHANGELOG section
+        id: notes
+        shell: bash
+        env:
+          VERSION: ${{ needs.verify.outputs.version }}
+        run: |
+          set -euo pipefail
+
+          # Pull the `## [X.Y.Z]` block out of CHANGELOG.md so the release
+          # notes are exactly what reviewers approved on the release PR.
+          NOTES="$(awk -v v="$VERSION" '
+            $0 ~ "^## \\[" v "\\]" { grab=1; next }
+            grab && /^## / { exit }
+            grab { print }
+          ' CHANGELOG.md)"
+
+          if [ -z "$(printf '%s' "$NOTES" | tr -d '[:space:]')" ]; then
+            echo "::warning::No CHANGELOG section found for ${VERSION}; using a stub."
+            NOTES="See the full history in CHANGELOG.md."
+          fi
+
+          # Write to a file rather than a $GITHUB_OUTPUT heredoc: release
+          # notes routinely contain backticks, and embedding them in an
+          # expression interpolation into a shell heredoc is how you get a
+          # silently truncated release note.
+          printf '%s\n' "$NOTES" > release-notes.md
+
+      - name: Attach the changelog notes to the draft release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ needs.verify.outputs.tag }}
+          VERSION: ${{ needs.verify.outputs.version }}
+        run: |
+          set -euo pipefail
+
+          # A DRAFT release is not addressable by tag: `GET /releases/tags/{tag}`
+          # returns 404 for drafts, so `gh release view "$TAG"` and
+          # `gh release edit "$TAG"` both fail. The draft has to be found in
+          # the full release list and patched by id.
+          #
+          # release-please creates the draft (config `draft: true`) together
+          # with the tag (`force-tag-creation: true`), and tauri-action in
+          # the build job above uploads the installers into that same draft.
+          RELEASE_ID="$(gh api "repos/${GITHUB_REPOSITORY}/releases" --paginate \
+            --jq "map(select(.tag_name == \"${TAG}\")) | .[0].id // empty")"
+
+          if [ -z "$RELEASE_ID" ]; then
+            echo "::error::No release found for ${TAG} (including drafts); the build job did not create one."
+            exit 1
+          fi
+
+          gh api "repos/${GITHUB_REPOSITORY}/releases/${RELEASE_ID}" \
+            --method PATCH \
+            --field "name=FunctionFly Vault ${VERSION}" \
+            --field "body@release-notes.md" \
+            --field "draft=true" >/dev/null
+
+          echo "Release ${TAG} updated with CHANGELOG notes."
+          echo ""
+          echo "It remains a DRAFT. Review the three platform installers, then:"
+          echo "  gh release edit ${TAG} --draft=false"
+
+  publish-updater:
+    name: publish updater manifest
+    needs: [verify, build]
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Check R2 credentials are provisioned
+        id: creds
+        shell: bash
+        env:
+          ACCOUNT_ID: ${{ secrets.R2_ACCOUNT_ID }}
+          ACCESS_KEY: ${{ secrets.R2_ACCESS_KEY_ID }}
+          SECRET_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+        run: |
+          # The bucket name is not a secret — it is pinned in
+          # scripts/release/README.md — so only the three credentials are
+          # required here.
+          if [ -z "$ACCOUNT_ID" ] || [ -z "$ACCESS_KEY" ] || [ -z "$SECRET_KEY" ]; then
+            echo "r2_configured=false" >> "$GITHUB_OUTPUT"
+            echo "::notice::R2 secrets are not provisioned; skipping the updater manifest publish."
+            echo "Installers are still published. Existing clients will not see this version until"
+            echo "publish-update.sh is run manually on the operator host."
+          else
+            echo "r2_configured=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      # Inert unless the R2 secrets above are present. Kept as a separate
+      # job with an explicit guard so a missing credential never fails an
+      # otherwise-good release, but never silently publishes a partial
+      # manifest either.
+      - name: Install the AWS CLI
+        if: steps.creds.outputs.r2_configured == 'true'
+        shell: bash
+        # The `awscli` apt package has no installation candidate on the
+        # ubuntu-24.04 runner image:
+        #   E: Package 'awscli' has no installation candidate
+        # R2 is S3-compatible, so the v2 CLI is installed from the
+        # official bundle instead.
+        run: |
+          set -euo pipefail
+          curl -fsSL -o awscliv2.zip https://awscli.amazonaws.com/awscli-exe-linux-x86_64.zip
+          unzip -q awscliv2.zip
+          ./aws/install --update
+          aws --version
+
+      - name: Download the signed updater assets
+        if: steps.creds.outputs.r2_configured == 'true'
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ needs.verify.outputs.tag }}
+        run: |
+          set -euo pipefail
+
+          # The release is tagged `vX.Y.Z` and `gh release download` needs
+          # that tag — downloading by the bare version finds nothing,
+          # because no release carries a tag called `0.1.1`.
+          #
+          # The updater artefacts are a `.tar.gz` on Linux and macOS and a
+          # `.zip` on Windows. The installers themselves (`.AppImage`,
+          # `.deb`, `.rpm`, `.dmg`, `.msi`, `.exe`) are served from the
+          # GitHub release and are deliberately not matched here.
+          mkdir -p ./sidecars
+          gh release download "$TAG" \
+            --repo "$GITHUB_REPOSITORY" \
+            --pattern '*.tar.gz' \
+            --pattern '*.tar.gz.sig' \
+            --pattern '*.nsis.zip' \
+            --pattern '*.nsis.zip.sig' \
+            --pattern '*.msi.zip' \
+            --pattern '*.msi.zip.sig' \
+            --dir ./sidecars
+
+          echo "Downloaded updater assets:"
+          ls -l ./sidecars
+
+      - name: Upload side-cars + manifest
+        if: steps.creds.outputs.r2_configured == 'true'
+        shell: bash
+        env:
+          VERSION: ${{ needs.verify.outputs.version }}
+          TAG: ${{ needs.verify.outputs.tag }}
+          CHANNEL: ${{ vars.UPDATER_CHANNEL || 'stable' }}
+          R2_ACCOUNT_ID: ${{ secrets.R2_ACCOUNT_ID }}
+          R2_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+          R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+          R2_BUCKET: ${{ secrets.R2_BUCKET || 'functionfly-vault-updates' }}
+        run: |
+          set -euo pipefail
+
+          # The manifest's `notes` field carries this release's changelog
+          # section, exactly as the GitHub release notes do.
+          NOTES="$(awk -v v="$VERSION" '
+            $0 ~ "^## \\[" v "\\]" { grab=1; next }
+            grab && /^## / { exit }
+            grab { print }
+          ' CHANGELOG.md)"
+          export NOTES
+
+          # One call per artefact. Each call publishes that artefact
+          # under the manifest target keys the plugin looks up and
+          # merges the entry into the channel manifest, so the three
+          # platform legs build up a single manifest.
+          ./scripts/release/publish-updater-assets.sh "$CHANNEL" "$VERSION" ./sidecars
+
+          echo "Updater manifest published for ${CHANNEL}/${VERSION}."
+          echo "Fetch it from: https://updates.functionfly.app/vault/${CHANNEL}/manifest.json"

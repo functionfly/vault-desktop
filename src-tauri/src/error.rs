@@ -110,3 +110,157 @@ impl From<crate::crypto::CryptoError> for AppError {
         AppError::new(kind, e)
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::api::ApiError;
+    use crate::crypto::CryptoError;
+    use crate::store::StoreError;
+
+    /// The webview branches on `kind`, so the wire shape is a contract.
+    /// A change to the field names or the casing silently breaks the UI.
+    #[test]
+    fn error_serializes_to_kind_and_message() {
+        let err = AppError::new(AppErrorKind::VaultLocked, "vault is locked");
+        let json = serde_json::to_value(&err).unwrap();
+
+        assert_eq!(json["kind"], "vault_locked");
+        assert_eq!(json["message"], "vault is locked");
+        // Exactly two fields: the UI's TypeScript type has no room for more.
+        assert_eq!(
+            json.as_object().unwrap().len(),
+            2,
+            "AppError must serialize to exactly {{kind, message}}"
+        );
+    }
+
+    #[test]
+    fn error_kinds_are_snake_case() {
+        // Every variant the UI can receive, with the exact casing it
+        // expects. `AppErrorKind` is `rename_all = "snake_case"`, and
+        // this pins the result so a serde attribute change is caught.
+        let cases = [
+            (AppErrorKind::Unauthenticated, "unauthenticated"),
+            (AppErrorKind::VaultLocked, "vault_locked"),
+            (AppErrorKind::InvalidCredentials, "invalid_credentials"),
+            (AppErrorKind::RateLimited, "rate_limited"),
+            (AppErrorKind::PlanDenied, "plan_denied"),
+            (AppErrorKind::NotFound, "not_found"),
+            (AppErrorKind::CsrfFailed, "csrf_failed"),
+            (AppErrorKind::InvalidInput, "invalid_input"),
+            (AppErrorKind::Storage, "storage"),
+            (AppErrorKind::Transport, "transport"),
+            (AppErrorKind::Unknown, "unknown"),
+        ];
+        for (kind, expected) in cases {
+            let json = serde_json::to_value(AppError::new(kind, "x")).unwrap();
+            assert_eq!(json["kind"], expected);
+        }
+    }
+
+    #[test]
+    fn api_errors_map_to_the_expected_kinds() {
+        let cases: Vec<(ApiError, AppErrorKind)> = vec![
+            (ApiError::Unauthenticated, AppErrorKind::Unauthenticated),
+            (ApiError::RateLimited, AppErrorKind::RateLimited),
+            (ApiError::PlanDenied, AppErrorKind::PlanDenied),
+            (ApiError::NotFound, AppErrorKind::NotFound),
+            (ApiError::CsrfRetry, AppErrorKind::CsrfFailed),
+            (
+                ApiError::NotConfigured("no base url".into()),
+                AppErrorKind::InvalidInput,
+            ),
+            (
+                ApiError::Api {
+                    status: 500,
+                    code: "boom".into(),
+                    message: "server error".into(),
+                },
+                AppErrorKind::Unknown,
+            ),
+            (
+                ApiError::Transport("dns failure".into()),
+                AppErrorKind::Transport,
+            ),
+        ];
+        for (api_err, expected) in cases {
+            let app_err: AppError = api_err.into();
+            assert_eq!(app_err.kind, expected);
+        }
+    }
+
+    #[test]
+    fn crypto_errors_map_to_the_expected_kinds() {
+        // A wrong passphrase must NOT be reported as invalid input: the
+        // user needs to be told to re-enter the passphrase, and it must
+        // not reveal whether the salt or the tag was wrong.
+        let cases: Vec<(CryptoError, AppErrorKind)> = vec![
+            (CryptoError::DecryptFailed, AppErrorKind::InvalidCredentials),
+            (CryptoError::MissingSalt, AppErrorKind::InvalidCredentials),
+            (
+                CryptoError::UnsupportedKeyVersion(99),
+                AppErrorKind::InvalidInput,
+            ),
+            (
+                CryptoError::Malformed("bad".into()),
+                AppErrorKind::InvalidInput,
+            ),
+            (
+                CryptoError::EncryptFailed("x".into()),
+                AppErrorKind::Unknown,
+            ),
+            (
+                CryptoError::Random("no entropy".into()),
+                AppErrorKind::Unknown,
+            ),
+        ];
+        for (crypto_err, expected) in cases {
+            let app_err: AppError = crypto_err.into();
+            assert_eq!(app_err.kind, expected);
+        }
+    }
+
+    #[test]
+    fn store_errors_map_to_the_expected_kinds() {
+        let cases: Vec<(StoreError, AppErrorKind)> = vec![
+            // "no credential stored" means the vault is locked, not
+            // that the keychain is broken — the UI re-prompts for the
+            // passphrase in that case.
+            (StoreError::NotFound, AppErrorKind::VaultLocked),
+            (StoreError::Keychain("denied".into()), AppErrorKind::Storage),
+            (
+                StoreError::Unsupported("no backend".into()),
+                AppErrorKind::Storage,
+            ),
+            (
+                StoreError::FileFallback("disk".into()),
+                AppErrorKind::Storage,
+            ),
+        ];
+        for (store_err, expected) in cases {
+            let app_err: AppError = store_err.into();
+            assert_eq!(app_err.kind, expected);
+        }
+    }
+
+    #[test]
+    fn decrypt_failure_message_does_not_leak_which_part_failed() {
+        // `CryptoError::DecryptFailed` deliberately collapses "wrong
+        // salt" and "forged tag" into one message. If a future change
+        // splits them, the distinction would become an oracle.
+        let err: AppError = CryptoError::DecryptFailed.into();
+        let message = err.message.to_lowercase();
+        assert!(
+            !message.contains("salt"),
+            "message leaked 'salt': {message}"
+        );
+        assert!(!message.contains("tag"), "message leaked 'tag': {message}");
+    }
+
+    #[test]
+    fn error_display_is_the_message() {
+        let err = AppError::new(AppErrorKind::Storage, "keychain unavailable");
+        assert_eq!(err.to_string(), "keychain unavailable");
+    }
+}

@@ -3,7 +3,8 @@
 //! Mirrors `studio-desktop/src-tauri/src/commands/updater.rs` (Phase 5
 //! of the studio plan). Both commands fail closed when:
 //!
-//! - `VAULT_UPDATER_PUBKEY` is missing (no signing key — refuse to
+//! - No public key is available at all — neither `VAULT_UPDATER_PUBKEY`
+//!   nor the key baked into the binary (no signing key — refuse to
 //!   trust any bundle).
 //! - The channel string isn't one of the two registered channels
 //!   (`stable` or `beta`; `unknown_channel` typed error).
@@ -20,6 +21,25 @@ use tauri_plugin_updater::UpdaterExt;
 use url::Url;
 
 use crate::updater::{UpdaterChannel, UpdaterConfig, UpdaterError};
+
+/// The Ed25519 public key compiled into the binary at build time.
+///
+/// It is read from `plugins.updater.pubkey` in `tauri.conf.json`, which
+/// Tauri bakes into the app's embedded configuration at compile time.
+/// This is what makes auto-update work for an ordinary user, who has no
+/// `VAULT_UPDATER_PUBKEY` in their environment. The env var remains an
+/// operator override (key rotation, staging) and takes precedence.
+fn baked_pubkey<R: Runtime>(app: &AppHandle<R>) -> Option<String> {
+    app.config()
+        .plugins
+        .0
+        .get("updater")
+        .and_then(|updater| updater.get("pubkey"))
+        .and_then(|pubkey| pubkey.as_str())
+        .map(str::trim)
+        .filter(|pubkey| !pubkey.is_empty())
+        .map(str::to_string)
+}
 
 #[derive(Debug, Serialize)]
 #[serde(tag = "result", rename_all = "snake_case")]
@@ -107,7 +127,8 @@ pub async fn vault_check_update<R: Runtime>(
         message: format!("unknown channel: {channel:?}"),
     })?;
 
-    let config = UpdaterConfig::from_env().map_err(map_config_err)?;
+    let baked = baked_pubkey(&app);
+    let config = UpdaterConfig::from_env(baked.as_deref()).map_err(map_config_err)?;
     let updater = build_updater(&app, &config, channel)?;
 
     let update = updater.check().await.map_err(|e| VaultUpdateError {
@@ -141,7 +162,8 @@ pub async fn vault_apply_update<R: Runtime>(
         message: format!("unknown channel: {channel:?}"),
     })?;
 
-    let config = UpdaterConfig::from_env().map_err(map_config_err)?;
+    let baked = baked_pubkey(&app);
+    let config = UpdaterConfig::from_env(baked.as_deref()).map_err(map_config_err)?;
     let updater = build_updater(&app, &config, channel)?;
 
     // Resolve → download → verify signature → stage bundle. The

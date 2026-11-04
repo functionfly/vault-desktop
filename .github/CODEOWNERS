@@ -1,0 +1,59 @@
+# Code owners for vault-desktop.
+#
+# A PR touching any path below requests review from the listed person.
+#
+# NOTE ON TEAM SLUGS: this file originally listed @functionfly/platform and
+# @functionfly/security, copied from the monorepo. The `functionfly` org has
+# NO teams (`gh api /orgs/functionfly/teams` returns `[]`), so every one of
+# those handles was unresolvable. CODEOWNERS with an unresolvable owner is
+# silently ignored by GitHub, which means "required approvals" backed by it
+# would never be satisfiable and merges would hang with no explanation.
+# The two real repository collaborators are used instead.
+#
+# When the org does grow teams, prefer team slugs over individuals: review
+# requests survive someone leaving the project.
+#
+# Current collaborators:
+#   functionflycom  — repo admin, org owner account
+#   CallReef        — collaborator
+#
+# Default owners for anything not matched below.
+*                                       @functionflycom
+
+# ── Security-sensitive surfaces ─────────────────────────────────────────────
+# The Rust core owns the crypto primitives, the keychain, and the HTTP client
+# that attaches the bearer token. A change here alters the trust boundary
+# between the vault and the orchestrator.
+/src-tauri/src/crypto.rs                 @functionflycom
+/src-tauri/src/store.rs                  @functionflycom
+/src-tauri/src/api.rs                    @functionflycom
+/src-tauri/src/updater.rs                @functionflycom
+/src-tauri/src/commands/                 @functionflycom
+
+# Capability manifest: this file decides what the webview is allowed to do.
+# Widening it is a privilege-escalation change and needs a deliberate review.
+/src-tauri/capabilities/                 @functionflycom
+
+# Wire-format compatibility with the dashboard and the Go SDK. Any edit here
+# can break cross-client secret decryption.
+/src/lib/ipc.ts                          @functionflycom
+
+# ── Release pipeline ────────────────────────────────────────────────────────
+# The signing key, the updater manifest layout, and the release scripts are
+# the supply chain for every shipped binary.
+/scripts/release/                        @functionflycom
+/.github/workflows/                      @functionflycom
+/.github/codeql/                         @functionflycom
+
+# ── Frontend ─────────────────────────────────────────────────────────────────
+/src/screens/                            @functionflycom
+/src/App.tsx                             @functionflycom
+/src/styles.css                          @functionflycom
+
+# ── Release metadata ─────────────────────────────────────────────────────────
+# These four are bumped together by release-please. A PR that touches one of
+# them without the others desynchronises the release.
+/CHANGELOG.md                            @functionflycom
+/package.json                            @functionflycom
+/src-tauri/Cargo.toml                    @functionflycom
+/src-tauri/tauri.conf.json               @functionflycom

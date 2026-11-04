@@ -1,0 +1,33 @@
+# Shared CodeQL configuration for the Rust core and the TypeScript webview.
+#
+# Extends the default set of queries. Anything listed here is IN ADDITION to
+# the defaults — removing a default requires an explicit reason, so the file
+# stays an append-only record of what this codebase cares about.
+name: "FunctionFly Vault Desktop"
+
+paths:
+  - src
+  - src-tauri/src
+  - scripts
+
+# Query suites that are worth running on every push.
+queries:
+  - uses: security-extended
+  - uses: security-and-quality
+
+# The default `code-scanning` suite flags a lot of in-test and in-script noise
+# (hardcoded URLs in shell scripts, test fixtures, generated icons). These
+# paths are excluded from results rather than from analysis.
+paths-ignore:
+  - node_modules
+  - src-tauri/target
+  - dist
+  - '**/*.test.ts'
+  - '**/*.test.tsx'
+  - '**/tests/**'
+  - src-tauri/gen/schemas
+
+# Note on the IPC boundary: `src/lib/ipc.ts` is a typed wrapper over Tauri
+# `invoke()`. CodeQL's JavaScript taint model does not cross that boundary
+# into Rust, so alerts there are not meaningful either way. The boundary is
+# audited where it is enforced — in the Rust core, which IS analysed.

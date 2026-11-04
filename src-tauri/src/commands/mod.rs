@@ -13,10 +13,10 @@ use std::sync::Arc;
 use serde::{Deserialize, Serialize};
 use tauri::State;
 
+use crate::api::HealthProbe;
 use crate::api::{urlencode, LoginUser, VaultClient};
 use crate::crypto;
 use crate::error::{AppError, AppErrorKind};
-use crate::api::HealthProbe;
 use crate::store::{BackendKind, SecretStore, StoreError, StoredSession};
 
 /// Shared, `Arc`-wrapped state. `tauri::State<T>` gives every command a
@@ -24,6 +24,12 @@ use crate::store::{BackendKind, SecretStore, StoreError, StoredSession};
 pub struct AppState {
     pub client: Arc<VaultClient>,
     pub store: Arc<SecretStore>,
+}
+
+impl Default for AppState {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl AppState {
@@ -109,9 +115,7 @@ pub fn looks_like_api_key(credential: &str) -> bool {
 /// every single launch. Those are verified with `validate_api_key`, which is
 /// the endpoint that actually understands them.
 #[tauri::command]
-pub async fn restore_session(
-    state: State<'_, AppState>,
-) -> Result<RestoreResult, AppError> {
+pub async fn restore_session(state: State<'_, AppState>) -> Result<RestoreResult, AppError> {
     let session = match state.store.load_session().await? {
         Some(s) => s,
         None => return Ok(RestoreResult::empty()),
@@ -355,7 +359,8 @@ pub async fn await_device_login(
 /// A single slot is enough: the login screen drives one sign-in at a time and
 /// starting a new one overwrites the old. Overwriting is deliberate — a stale
 /// flow cannot be resumed later by a window that still remembers its code.
-type DeviceFlows = std::sync::Mutex<std::collections::HashMap<String, (String, crate::api::DeviceAuthorization)>>;
+type DeviceFlows =
+    std::sync::Mutex<std::collections::HashMap<String, (String, crate::api::DeviceAuthorization)>>;
 
 /// Flows waiting for human approval, keyed by user_code.
 static DEVICE_FLOWS: std::sync::OnceLock<DeviceFlows> = std::sync::OnceLock::new();
@@ -396,10 +401,7 @@ fn take_device_flow(
 /// Holds the unlock passphrase in memory. The passphrase is never
 /// persisted; it is wiped on lock or window close.
 #[tauri::command]
-pub async fn unlock_vault(
-    state: State<'_, AppState>,
-    passphrase: String,
-) -> Result<(), AppError> {
+pub async fn unlock_vault(state: State<'_, AppState>, passphrase: String) -> Result<(), AppError> {
     if !state.client.is_authenticated().await {
         return Err(AppError::new(
             AppErrorKind::Unauthenticated,
@@ -523,12 +525,7 @@ pub async fn list_secrets(
 
     let resp: serde_json::Value = state
         .client
-        .request(
-            reqwest::Method::GET,
-            "/v1/vault/secrets",
-            &q,
-            None,
-        )
+        .request(reqwest::Method::GET, "/v1/vault/secrets", &q, None)
         .await?;
 
     Ok(ListSecretsResult {
@@ -654,9 +651,7 @@ pub async fn rollback_secret(
 }
 
 #[tauri::command]
-pub async fn list_namespaces(
-    state: State<'_, AppState>,
-) -> Result<serde_json::Value, AppError> {
+pub async fn list_namespaces(state: State<'_, AppState>) -> Result<serde_json::Value, AppError> {
     require_auth(&state).await?;
     state
         .client
@@ -698,7 +693,10 @@ pub async fn create_secret(
 
     let name = input.name.trim();
     if name.is_empty() {
-        return Err(AppError::new(AppErrorKind::InvalidInput, "name is required"));
+        return Err(AppError::new(
+            AppErrorKind::InvalidInput,
+            "name is required",
+        ));
     }
     if input.plaintext.len() > MAX_PLAINTEXT_BYTES {
         return Err(AppError::new(
@@ -818,10 +816,7 @@ pub async fn rotate_secret(
 }
 
 #[tauri::command]
-pub async fn delete_secret(
-    state: State<'_, AppState>,
-    id: String,
-) -> Result<(), AppError> {
+pub async fn delete_secret(state: State<'_, AppState>, id: String) -> Result<(), AppError> {
     require_auth(&state).await?;
     let path = format!("/v1/vault/secrets/{id}");
     state
@@ -846,12 +841,7 @@ pub async fn list_audit(
         let path = format!("/v1/vault/secrets/{s}/audit");
         return state
             .client
-            .request(
-                reqwest::Method::GET,
-                &path,
-                &[],
-                None,
-            )
+            .request(reqwest::Method::GET, &path, &[], None)
             .await
             .map_err(Into::into);
     }
@@ -922,10 +912,7 @@ pub async fn generate_token(
 }
 
 #[tauri::command]
-pub async fn revoke_token(
-    state: State<'_, AppState>,
-    token_id: String,
-) -> Result<(), AppError> {
+pub async fn revoke_token(state: State<'_, AppState>, token_id: String) -> Result<(), AppError> {
     require_auth(&state).await?;
     let path = format!("/v1/vault/tokens/{token_id}");
     state
@@ -979,7 +966,12 @@ pub async fn bulk_delete_secrets(
     });
     state
         .client
-        .request(reqwest::Method::DELETE, "/v1/vault/secrets/bulk-delete", &[], Some(body))
+        .request(
+            reqwest::Method::DELETE,
+            "/v1/vault/secrets/bulk-delete",
+            &[],
+            Some(body),
+        )
         .await
         .map_err(Into::into)
 }
@@ -1002,16 +994,18 @@ pub async fn create_namespace(
     let body = serde_json::json!({ "name": name });
     state
         .client
-        .request(reqwest::Method::POST, "/v1/vault/namespaces", &[], Some(body))
+        .request(
+            reqwest::Method::POST,
+            "/v1/vault/namespaces",
+            &[],
+            Some(body),
+        )
         .await
         .map_err(Into::into)
 }
 
 #[tauri::command]
-pub async fn delete_namespace(
-    state: State<'_, AppState>,
-    id: String,
-) -> Result<(), AppError> {
+pub async fn delete_namespace(state: State<'_, AppState>, id: String) -> Result<(), AppError> {
     require_auth(&state).await?;
     let path = format!("/v1/vault/namespaces/{id}");
     state
@@ -1076,10 +1070,7 @@ pub async fn list_audit_by_actor(
 
 async fn require_auth(state: &State<'_, AppState>) -> Result<(), AppError> {
     if !state.client.is_authenticated().await {
-        return Err(AppError::new(
-            AppErrorKind::Unauthenticated,
-            "log in first",
-        ));
+        return Err(AppError::new(AppErrorKind::Unauthenticated, "log in first"));
     }
     Ok(())
 }
@@ -1141,15 +1132,15 @@ async fn encrypt_field(
         .with_passphrase(|pw| {
             crypto::encrypt(plaintext, pw)
                 .map_err(AppError::from)
-                .and_then(|d| serde_json::to_value(d).map_err(|e| {
-                    AppError::new(AppErrorKind::Unknown, format!("serializing payload: {e}"))
-                }))
+                .and_then(|d| {
+                    serde_json::to_value(d).map_err(|e| {
+                        AppError::new(AppErrorKind::Unknown, format!("serializing payload: {e}"))
+                    })
+                })
         })
         .await;
-    let inner = inner?;
-    inner
+    inner?
 }
-
 fn login_user_stub(_session: &StoredSession) -> LoginUser {
     // `StoredSession` does not include the user blob — that was rendered into
     // the dashboard from the login response. This is the session-restore
@@ -1162,5 +1153,107 @@ fn login_user_stub(_session: &StoredSession) -> LoginUser {
         username: None,
         tenant_id: String::new(),
         role: None,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// `looks_like_api_key` decides whether a stored credential is sent to
+    /// the API-key endpoints or the session-token endpoints. A credential
+    /// misrouted to the wrong endpoint is bounced on every launch, so the
+    /// shape test is worth pinning.
+    #[test]
+    fn api_key_shape_is_recognised() {
+        assert!(looks_like_api_key("ffp_1_abc_def"));
+        assert!(looks_like_api_key("fff_2_x_y"));
+        assert!(looks_like_api_key("ffx_1_a_b"));
+        assert!(looks_like_api_key("ffe_9_a_b"));
+        assert!(looks_like_api_key("ffo_1_a_b"));
+        assert!(looks_like_api_key("fft_1_a_b"));
+        assert!(looks_like_api_key("ffmp_1_a_b"));
+        assert!(looks_like_api_key("ffr_1_a_b"));
+    }
+
+    #[test]
+    fn session_tokens_are_not_mistaken_for_api_keys() {
+        // An opaque JWT from `/v1/auth/login` does not start with `ff`.
+        assert!(!looks_like_api_key(
+            "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.payload.sig"
+        ));
+        assert!(!looks_like_api_key(""));
+        assert!(!looks_like_api_key("ff"));
+        // Two segments is not enough: the real key shape is
+        // `{prefix}_{version}_{random}_{checksum}`.
+        assert!(!looks_like_api_key("ffp_1"));
+    }
+
+    #[test]
+    fn list_query_defaults_to_fifty() {
+        // The default is what the webview relies on when it sends a
+        // query without a limit.
+        assert_eq!(default_limit(), 50);
+    }
+
+    #[test]
+    fn list_query_uses_the_default_when_limit_is_absent() {
+        #[derive(Deserialize)]
+        struct Probe {
+            #[serde(default = "default_limit")]
+            limit: u32,
+        }
+        let probe: Probe = serde_json::from_str("{}").unwrap();
+        assert_eq!(probe.limit, 50);
+
+        // An explicit limit wins.
+        let probe: Probe = serde_json::from_str(r#"{"limit": 10}"#).unwrap();
+        assert_eq!(probe.limit, 10);
+    }
+
+    /// The device-flow map is process-global state shared by every
+    /// concurrent sign-in attempt. Losing a flow means the user is stuck
+    /// at the "enter your code" screen with no way forward, so the
+    /// insert/take round trip is worth pinning.
+    #[test]
+    fn device_flow_is_stored_and_taken_exactly_once() {
+        let flow = crate::api::DeviceAuthorization::new(
+            "device-code-value",
+            "WXYZ-2345",
+            "https://example.com/device",
+            "https://example.com/device?code=WXYZ-2345",
+            900,
+            5,
+        );
+
+        {
+            let mut flows = device_flows().lock().unwrap();
+            flows.insert(
+                "WXYZ-2345".into(),
+                ("https://api.example.com".to_string(), flow.clone()),
+            );
+        }
+
+        // Taking it once succeeds.
+        let taken = device_flows().lock().unwrap().remove("WXYZ-2345");
+        assert!(taken.is_some(), "the pending flow should be present");
+
+        // Taking it a second time does not — the flow is single-use.
+        let again = device_flows().lock().unwrap().remove("WXYZ-2345");
+        assert!(again.is_none(), "the flow must not be reusable");
+
+        // The stored base URL round-trips intact.
+        let (_, auth) = taken.unwrap();
+        assert_eq!(auth.user_code, "WXYZ-2345");
+        assert_eq!(auth.verification_uri, "https://example.com/device");
+    }
+
+    #[test]
+    fn unknown_device_code_takes_nothing() {
+        assert!(device_flows()
+            .lock()
+            .unwrap()
+            .remove("NOT-A-REAL-CODE")
+            .is_none());
     }
 }

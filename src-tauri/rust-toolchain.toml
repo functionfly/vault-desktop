@@ -1,0 +1,29 @@
+# Rust toolchain pin.
+#
+# Cargo.toml declares `rust-version = "1.90"` (the MSRV), which is what the
+# build must keep compiling against. This file pins what CI and local dev
+# actually *use* — deliberately newer than the MSRV so current stable
+# toolchains can compile the Tauri 2 dependency graph.
+#
+# The MSRV was raised from 1.80 to 1.90 on 2026-11-03: the Tauri v2
+# dependency graph (tauri-macros, tauri-plugin, tauri-build, tauri-codegen,
+# tauri-utils, tray-icon) declares `rust-version = "1.90"`, so 1.80 was
+# never actually buildable.
+#
+# `channel = "stable"` is intentional: pinning an exact version would freeze
+# the repo onto a toolchain that eventually stops receiving security patches.
+# `rust-toolchain.toml` still serves two real purposes here: it declares the
+# rustfmt/clippy components every contributor and every runner gets without
+# extra configuration, and it makes that choice visible in the repo.
+[toolchain]
+channel = "stable"
+components = ["rustfmt", "clippy"]
+
+# Windows and Linux release builds are compiled natively on matching runners,
+# so no cross-compilation targets are declared. macOS additionally needs the
+# universal target, which release.yml passes to dtolnay/rust-toolchain via
+# `targets:` because it is runner-conditional and cannot be pinned statically.
+[profile.release]
+codegen-units = 1
+lto = true
+strip = true

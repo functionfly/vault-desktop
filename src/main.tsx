@@ -1,15 +1,8 @@
-import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import React from "react";
 import ReactDOM from "react-dom/client";
 import { App } from "./App";
 import { initTheme, primeTheme, watchSystemTheme } from "./lib/theme";
 import "./styles.css";
-
-const queryClient = new QueryClient({
-  defaultOptions: {
-    queries: { retry: false, refetchOnWindowFocus: false, staleTime: 10_000 },
-  },
-});
 
 // Theme bootstrap. `primeTheme()` paints a synchronous guess BEFORE the first
 // frame so a dark-mode user never sees a white flash; `initTheme()` then
@@ -25,10 +18,12 @@ void watchSystemTheme();
 const root = document.getElementById("root");
 if (!root) throw new Error("missing #root");
 
+// NOTE: there is deliberately no query-cache provider here. Every screen
+// reads through the typed IPC wrappers in `src/lib/ipc.ts`, which already
+// own their own loading/error state; a second caching layer on top would
+// only ever duplicate it.
 ReactDOM.createRoot(root).render(
   <React.StrictMode>
-    <QueryClientProvider client={queryClient}>
-      <App />
-    </QueryClientProvider>
+    <App />
   </React.StrictMode>
 );

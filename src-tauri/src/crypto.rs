@@ -10,7 +10,7 @@
 //!   - Cipher      : AES-256-GCM, random 12-byte IV per message
 //!   - key_version : 1 = 100_000 iterations (legacy), 2 = 600_000 (current)
 //!   - Ciphertext  : base64(ct || tag) — the GCM tag is APPENDED to the
-//!                   ciphertext bytes and the `tag` field is left EMPTY.
+//!     ciphertext bytes and the `tag` field is left EMPTY.
 //!
 //! The inline-tag layout is not an accident: WebCrypto's
 //! `subtle.encrypt` returns `ct||tag`, so the dashboard writes it that way and
@@ -345,8 +345,8 @@ mod tests {
     fn unknown_key_version_is_rejected_not_guessed() {
         let payload = EncryptedData {
             ciphertext: B64.encode(b"x"),
-            iv: B64.encode(&[0u8; 12]),
-            salt: B64.encode(&[0u8; 16]),
+            iv: B64.encode([0u8; 12]),
+            salt: B64.encode([0u8; 16]),
             tag: String::new(),
             key_version: 99,
         };
@@ -395,8 +395,8 @@ mod tests {
     fn wrong_length_tag_is_rejected() {
         let bad = EncryptedData {
             ciphertext: B64.encode(b"ct"),
-            iv: B64.encode(&[0u8; 12]),
-            salt: B64.encode(&[0u8; 16]),
+            iv: B64.encode([0u8; 12]),
+            salt: B64.encode([0u8; 16]),
             tag: B64.encode([0u8; 8]),
             key_version: CURRENT_KEY_VERSION,
         };
@@ -407,7 +407,7 @@ mod tests {
     fn missing_salt_is_reported_distinctly() {
         let enc = EncryptedData {
             ciphertext: B64.encode(b"ct"),
-            iv: B64.encode(&[0u8; 12]),
+            iv: B64.encode([0u8; 12]),
             salt: String::new(),
             tag: String::new(),
             key_version: CURRENT_KEY_VERSION,
