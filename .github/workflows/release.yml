@@ -206,6 +206,40 @@ jobs:
             exit 1
           fi
 
+      # Reports whether THIS platform's installer can be code-signed.
+      #
+      # Signing is optional today: the `APPLE_*` and `WINDOWS_CERTIFICATE*`
+      # secrets are not provisioned, so without this step a release could
+      # be cut with no signing at all and nothing would say so. The user
+      # would then meet a Gatekeeper quarantine warning on macOS and a
+      # SmartScreen "unknown publisher" dialog on Windows — on a secrets
+      # manager, which is where that warning does the most damage.
+      #
+      # Set the repository variable `REQUIRE_CODE_SIGNING=true` to make an
+      # unsigned artefact fail the release instead of being reported.
+      - name: Report code-signing readiness
+        shell: bash
+        env:
+          REQUIRE_CODE_SIGNING: ${{ vars.REQUIRE_CODE_SIGNING || 'false' }}
+          APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE_P12 }}
+          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+          APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+          WINDOWS_CERTIFICATE: ${{ secrets.WINDOWS_CERTIFICATE_PFX }}
+          WINDOWS_CERTIFICATE_PASSWORD: ${{ secrets.WINDOWS_CERTIFICATE_PASSWORD }}
+        run: |
+          set -uo pipefail
+          ARGS=()
+          if [ "$REQUIRE_CODE_SIGNING" = "true" ]; then
+            ARGS+=(--require)
+          fi
+          if ! ./scripts/release/check-signing-readiness.sh "${ARGS[@]}"; then
+            echo "::error::Code signing is required but the signing material is missing."
+            exit 1
+          fi
+
       - name: Build + sign bundles
         uses: tauri-apps/tauri-action@v0
         env:

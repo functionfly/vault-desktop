@@ -5,11 +5,8 @@ Built on Tauri v2 (Rust core + React webview) and packed into a single binary
 for Windows, macOS, and Linux.
 
 > **Status: 2026-11-03 — v0.1.0.**
-> Rust core: `cargo clippy --all-targets -- -D warnings` clean; 52/52 unit tests + 19/19 mockito integration tests + 10/10 device-flow tests + 4/4 updater-config contract tests passing. React bundle: `tsc` + `vite build` clean, 58/58 vitest. Signed auto-update (Phase 5) is wired with the Ed25519 public key compiled into the binary, so an installed client can verify updates without any environment variable.
-> No real-staging smoke yet — that requires a live orchestrator on a host
-> with a real OS keychain (the headless CI runner used for the build does not
-> have one), so the manual checklist at the end of this document is the
-> pre-merge gate.
+> Rust core: `cargo clippy --all-targets -- -D warnings` clean; 52/52 unit tests + 19/19 mockito integration tests + 10/10 device-flow tests + 4/4 updater-config contract tests + 2/2 OS-keychain tests passing. React bundle: `tsc` + `vite build` clean, 58/58 vitest. Signed auto-update (Phase 5) is wired with the Ed25519 public key compiled into the binary, so an installed client can verify updates without any environment variable.
+> The OS keychain round-trip and the staging-smoke script are now automated and run in CI. The remaining manual gate is the staging smoke against a **live** orchestrator — the script is tested, the orchestrator is not. Code-signing configuration is in place but the certificates are not provisioned.
 
 ## What it does
 
@@ -121,7 +118,7 @@ Nothing is tagged by hand — merge the release PR and release-please tags it.
 | `TAURI_SIGNING_PRIVATE_KEY` | **yes** | Ed25519 updater signing. Absent → the release fails closed rather than shipping an unsigned artefact the updater would reject anyway. |
 | `TAURI_SIGNING_PRIVATE_KEY_PASSWORD` | **yes** | Passphrase for the above. |
 | `R2_ACCOUNT_ID`, `R2_ACCESS_KEY_ID`, `R2_SECRET_ACCESS_KEY`, `R2_BUCKET` | no | Publishes the updater manifest. When unset the installers still publish and the job logs how to run `publish-update.sh` by hand. |
-| `APPLE_*`, `WINDOWS_CERTIFICATE*` | no | Notarisation / code signing. |
+| `APPLE_*`, `WINDOWS_CERTIFICATE*` | no | Notarisation / code signing. The *configuration* is in place (`bundle.macOS.entitlements`, `bundle.windows`); the certificates are not — they need a paid Apple Developer Program membership and a Windows code-signing certificate. `scripts/release/check-signing-readiness.sh` reports the gap, and `release.yml` runs it before the build. |
 
 ### Known gaps
 
@@ -227,8 +224,9 @@ empty/Unicode/50KB plaintext roundtrip.
 | Orchestrator mock (HTTP + CSRF contract)    | 19    | `cargo test --test orchestrator_mock`    |
 | Device-flow (RFC 8628 device grant)         | 10    | `cargo test --test device_flow`          |
 | Updater config contract                      | 4     | `cargo test --test updater_config`       |
+| OS keychain round-trip                       | 2     | `cargo test --test keychain_smoke`       |
 | Frontend IPC + theme contract                | 58    | `bunx vitest run`                        |
-| **Total**                                    | **143** | |
+| **Total**                                    | **145** | |
 
 The release tooling has its own suite — `bash scripts/release/publish-update.test.sh` —
 which asserts the updater manifest contract rather than merely checking that
@@ -463,36 +461,113 @@ The script is deterministic; rerun it whenever the brand mark changes
   reveal/create/rotate actions; if parallel volume becomes a real
   workload, move the work onto a dedicated blocking thread.
 
-## Manual smoke checklist (gating staging deploy)
+## Smoke checks
 
-Until the headless CI runner has a real OS keychain, the following manual
-checks are the merge gate:
+Two of the three launch gates are automated and run in CI. The third —
+against a live orchestrator — is still a human step, but the script that
+performs it is now tested.
 
-1. **Linux**
-   - `cd vault-desktop && bun install && bun run build`
-   - `cd src-tauri && cargo tauri build` → `target/release/bundle/appimage/*.AppImage`
-   - Run the bundle. Confirm the first-launch keychain prompt.
-   - Log in against `https://api.functionfly.com`. Confirm the keychain
-     now contains `functionfly-vault-desktop` entries via `secret-tool search
-service functionfly-vault-desktop` (libsecret).
-   - List secrets, reveal one, copy the plaintext into a fresh terminal,
-     confirm the value matches what the dashboard reveals for the same
-     secret.
-   - Create a secret from the desktop (**New secret**), then reveal it and
-     confirm the plaintext round-trips. Confirm the dashboard can reveal the
-     same secret (proves the wire format is interoperable both ways).
-   - **Rotate** the secret with a new value, confirm the version count
-     increments, then reveal and confirm the new value. **Roll back** to the
-     prior version and confirm the value reverts. **Delete** the secret and
-     confirm it disappears from the list.
-2. **macOS** — same flow, bundle the `.app`/`dmg`, confirm Keychain entries
-   under the `functionfly-vault-desktop` service via
-   `security find-generic-password -s functionfly-vault-desktop`.
-3. **Windows** — bundle the `.msi`/`.exe`, confirm Credential Manager entries
-   under `functionfly-vault-desktop` via `cmdkey /list:functionfly-vault-desktop`.
-4. Across all three: lock the vault, confirm the list still loads but
-   the **Reveal** button is gated; sign out, confirm `/v1/vault/*` calls now
-   return 401 and the UI returns to the login screen.
+### Automated
+
+**OS keychain** — `scripts/keychain-smoke.sh`. Round-trips a session
+through the *real* credential store using the application's own
+`SecretStore` code, then confirms the credential is visible through the
+platform's own tooling, then removes it.
+
+```bash
+./scripts/keychain-smoke.sh
+```
+
+The critical assertion is that the backend actually used was
+`BackendKind::OsKeychain`. `SecretStore` silently falls back to the
+encrypted file store when the OS keychain is unreachable — correct for a
+headless Linux box, and exactly what would hide a broken keychain on a
+platform that *should* have one. On Windows and macOS a file fallback is
+therefore a hard failure; on Linux the test skips with an explicit
+notice.
+
+> **The credential name differs per platform.** The `keyring` crate
+> stores a Windows generic credential whose target is
+> `{account}.{service}` — so the target is
+> `orchestrator-access-token.functionfly-vault-desktop`, and
+> `cmdkey /list:functionfly-vault-desktop` matches *nothing* and reports
+> `* NONE *`. It looks like a broken keychain when it is working
+> perfectly. macOS puts the service in the Keychain service attribute
+> (`security find-generic-password -s functionfly-vault-desktop`), and
+> Linux puts it in the Secret Service `service` attribute
+> (`secret-tool search service functionfly-vault-desktop`).
+> `scripts/keychain-smoke.sh` gets this right per platform.
+
+**Staging smoke script** — `scripts/staging-smoke.test.sh`. The real
+`scripts/staging-smoke.sh` has never been run against a real
+orchestrator, so nothing about it was known to work. This drives the
+**unmodified** script against a mock orchestrator that *enforces* the
+security contract — bearer on every `/v1/*` route, CSRF on every
+mutation — and then asserts that the script never triggered a rejection
+and never sent a CSRF header on a safe method.
+
+```bash
+./scripts/staging-smoke.test.sh
+```
+
+### Manual (still required)
+
+The script above proves the *script* is correct. It does not prove the
+orchestrator behaves the way the script expects. Before a release, run
+the real thing against staging:
+
+```bash
+STAGING_BASE_URL=https://api-staging.functionfly.dev \
+STAGING_EMAIL=you@example.com \
+STAGING_PASSWORD=… \
+  bash scripts/staging-smoke.sh
+```
+
+Then, per platform, with the built installer:
+
+1. **Bundle and install**
+   - `bun install && bun run build`
+   - `cd src-tauri && bunx tauri build`
+   - Install the artefact (`.AppImage` / `.dmg` / `.msi`) and confirm the
+     first-launch keychain prompt.
+2. **Log in and confirm the keychain**, using the platform-correct
+   command from the table above.
+3. **Prove the crypto interop** — list a secret, reveal it, copy the
+   plaintext into a fresh terminal, and confirm it matches what the
+   dashboard reveals for the same secret.
+4. **Prove the write path** — create a secret from the desktop, reveal
+   it, and confirm the plaintext round-trips. Confirm the dashboard can
+   reveal the same secret.
+5. **Rotate, roll back, delete** — rotate the secret with a new value,
+   confirm the version count increments, reveal and confirm the new
+   value; roll back to the prior version and confirm the value reverts;
+   delete the secret and confirm it disappears from the list.
+6. **Session lifecycle** — lock the vault and confirm the list still
+   loads but **Reveal** is gated; sign out and confirm `/v1/vault/*`
+   calls now return 401 and the UI returns to the login screen.
+
+### Code signing
+
+`scripts/release/check-signing-readiness.sh` reports whether the
+current host could produce a signed, notarised installer:
+
+```bash
+./scripts/release/check-signing-readiness.sh              # advisory
+./scripts/release/check-signing-readiness.sh --require    # fail closed
+```
+
+It runs in `release.yml` before the build and in CI. The configuration
+is in place — `bundle.macOS.entitlements` and `bundle.windows` — so
+signing works the moment the certificates are provisioned. What is
+**not** in place is the certificates themselves: they need an Apple
+Developer Program membership and a Windows code-signing certificate,
+neither of which this repository can supply.
+
+Until they are provisioned, a macOS release is quarantined by Gatekeeper
+and a Windows release shows the SmartScreen "unknown publisher" dialog.
+On a secrets manager that warning does real damage, so set the
+repository variable `REQUIRE_CODE_SIGNING=true` once the secrets exist
+and the gate will fail an unsigned release rather than report it.
 
 ## Where this code came from
 

@@ -199,7 +199,8 @@ job_release_scripts() {
   run_step release-scripts "py_compile release helpers" \
     bash -c "$py -m py_compile scripts/release/render-manifest.py \
                        scripts/release/updater-targets.py \
-                       scripts/release/mock-r2.py"
+                       scripts/release/mock-r2.py \
+                       scripts/release/mock-orchestrator.py"
 
   # A script committed without the executable bit dies with exit 126
   # before it runs, which reads like a broken script rather than a
@@ -235,6 +236,25 @@ job_release_scripts() {
   # Tauri CLI cannot sign the updater artefacts.
   run_step release-scripts "updater config contract" \
     bash -c 'cd src-tauri && cargo test --test updater_config'
+
+  # The OS keychain round-trip. On Windows and macOS the test asserts that
+  # the real credential store was used; on a headless Linux box it skips
+  # with an explicit message, because the encrypted file fallback is the
+  # documented behaviour there.
+  run_step release-scripts "OS keychain round-trip" \
+    bash -c 'cd src-tauri && cargo test --test keychain_smoke'
+
+  # The staging smoke script has never been run against a real
+  # orchestrator. This drives the real script against a mock that
+  # ENFORCES the bearer + CSRF contract, so a green run proves the
+  # script speaks the protocol rather than being waved through.
+  run_step release-scripts "staging-smoke.sh against a mock orchestrator" \
+    bash scripts/staging-smoke.test.sh
+
+  # Reports whether this host could produce a signed installer. Advisory
+  # by default; `--require` turns it into a gate.
+  run_step release-scripts "code-signing readiness" \
+    bash scripts/release/check-signing-readiness.sh
 }
 
 # ── Parity check against ci.yml ─────────────────────────────────────────
@@ -255,10 +275,13 @@ job_check_parity() {
         "cargo test --test orchestrator_mock" \
         "cargo test --test device_flow" \
         "cargo test --test updater_config" \
+        "cargo test --test keychain_smoke" \
         "bunx tauri build --no-bundle" \
         "scripts/check-no-internal-leaks.sh" \
         "scripts/release/publish-update.test.sh" \
-        "scripts/release/verify-updater-keypair.sh"; do
+        "scripts/release/verify-updater-keypair.sh" \
+        "scripts/release/check-signing-readiness.sh" \
+        "scripts/staging-smoke.test.sh"; do
         if ! grep -qF "$probe" "$yml"; then
           echo "::error::${probe} is not in ${yml} but the portable runner runs it."
           missing=1
