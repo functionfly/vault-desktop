@@ -113,11 +113,15 @@ jobs:
         # that prove the HTTP + CSRF contract without a real orchestrator.
         # `--test updater_config` proves the updater's verification key is
         # present and parseable in the shipped configuration.
+        # `--test keychain_smoke` exercises the real OS credential store.
+        # It skips with a notice on a headless runner (no Secret Service),
+        # and fails hard on macOS/Windows, where a keychain always exists.
         run: |
           cargo test --lib
           cargo test --test orchestrator_mock
           cargo test --test device_flow
           cargo test --test updater_config
+          cargo test --test keychain_smoke
 
   # ── Cross-platform compile matrix ─────────────────────────────────────────
   # Proves the crate compiles and the webview bundles on every shipping OS.
@@ -297,6 +301,24 @@ jobs:
         # here too.
         shell: bash
         run: ./scripts/release/verify-updater-keypair.sh
+
+      - name: Staging smoke script against a mock orchestrator
+        # `scripts/staging-smoke.sh` is the manual pre-merge gate against
+        # a real orchestrator. It had never been run against anything, so
+        # this drives the REAL script against a mock that ENFORCES the
+        # bearer + CSRF contract. A green run means the script speaks the
+        # protocol, not that a permissive mock let it through.
+        shell: bash
+        run: bash scripts/staging-smoke.test.sh
+
+      - name: Code-signing readiness
+        # Reports whether this host could produce a signed installer.
+        # Advisory by default: the `APPLE_*` / `WINDOWS_CERTIFICATE*`
+        # secrets are optional in the release pipeline. Set the
+        # repository variable `REQUIRE_CODE_SIGNING=true` to make an
+        # unsigned artefact fail instead of being reported.
+        shell: bash
+        run: bash scripts/release/check-signing-readiness.sh
 
       - name: Publish smoke script
         # `scripts/staging-smoke.sh` is still the manual pre-merge gate for a

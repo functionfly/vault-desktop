@@ -64,11 +64,15 @@ list_audit_by_action, list_audit_by_actor
 - 4 updater-config contract tests (`cargo test --test updater_config`) —
   the verification key is present, parseable by the plugin's own config
   type, and decodes as a minisign public key.
+- 2 OS-keychain tests (`cargo test --test keychain_smoke`) — a session
+  round-trips through the real credential store. Fails hard if the
+  encrypted file fallback is used on Windows or macOS, where a keychain
+  always exists; skips with a notice on a headless Linux box.
 - 58 vitest contract tests (`bunx vitest run`) — every typed wrapper
   in `src/lib/ipc.ts` sends the right (command, args) shape; typed
   `{kind, message}` rejections parse into `VaultIpcError`.
-- **Total: 143/143 tests pass** (52 Rust lib + 19 mockito integration +
-  10 device flow + 4 updater config + 58 vitest).
+- **Total: 145/145 tests pass** (52 Rust lib + 19 mockito integration +
+  10 device flow + 4 updater config + 2 keychain + 58 vitest).
 
 ### Updater
 
@@ -152,10 +156,35 @@ notes, pub_date }`; `vault_apply_update(channel)` downloads,
 
 ### Manual gates
 
-- `scripts/staging-smoke.sh` — 13-step real-orchestrator end-to-end
+- `scripts/staging-smoke.sh` — 14-step real-orchestrator end-to-end
   script. Idempotent (per-run `STAGING_SMOKE_NONCE`); cleans up after
-  itself. CI only verifies syntax + shellcheck; a reviewer runs it
-  against staging before merge.
+  itself.
+- `scripts/staging-smoke.test.sh` — drives the **unmodified** script
+  against a mock orchestrator that enforces the bearer + CSRF contract,
+  and asserts the script never triggered a rejection and never sent a
+  CSRF header on a safe method. The script had never been run against
+  anything before this, so nothing about it was known to work.
+- `scripts/keychain-smoke.sh` — round-trips a session through the real
+  OS credential store using the application's own `SecretStore` code,
+  confirms it through the platform's own tooling, and removes it.
+  Replaces a manual per-OS checklist step that had never been executed.
+- `scripts/release/check-signing-readiness.sh` — reports whether the
+  host could produce a signed, notarised installer. Advisory by
+  default; `--require` fails the release. Runs in `release.yml` before
+  the build.
+
+### Code signing
+
+- `bundle.macOS.entitlements` (`src-tauri/entitlements.plist`) with the
+  hardened runtime enabled, and `bundle.windows` with SHA-256 digesting
+  and a timestamping server. The configuration is in place so signing
+  works as soon as the certificates are provisioned; the certificates
+  themselves need a paid Apple Developer Program membership and a
+  Windows code-signing certificate.
+- `signingIdentity` and `certificateThumbprint` are deliberately NOT
+  set in `tauri.conf.json`: a value that names a certificate which is
+  not present makes the build fail outright. Both are supplied at build
+  time through `APPLE_SIGNING_IDENTITY` and `WINDOWS_CERTIFICATE`.
 
 ### Branding
 
