@@ -187,6 +187,12 @@ PUBLIC_BASE="${VAULT_UPDATER_PUBLIC_BASE:-https://updates.functionfly.com/vault/
 SIDECAR_KEY="vault/${CHANNEL}/${VERSION}/${ARCHIVE_NAME}"
 SIG_KEY="vault/${CHANNEL}/${VERSION}/${SIG_NAME}"
 MANIFEST_KEY="vault/${CHANNEL}/manifest.json"
+# The version index is the channel's HISTORY: every published version with
+# its notes and its per-platform files. The manifest above describes only
+# the newest version (the plugin deliberately discards a previous
+# version's entries), so the marketing site's downloads page reads this
+# document to list every version with its features.
+VERSIONS_KEY="vault/${CHANNEL}/versions.json"
 ARCHIVE_URL="${PUBLIC_BASE}/${VERSION}/${ARCHIVE_NAME}"
 
 WORK_DIR="$(mktemp -d)"
@@ -200,6 +206,15 @@ if aws s3api get-object \
       "$WORK_DIR/existing.json" \
       --endpoint-url "$ENDPOINT" >/dev/null 2>&1; then
   EXISTING_MANIFEST="$WORK_DIR/existing.json"
+fi
+
+EXISTING_VERSIONS=""
+if aws s3api get-object \
+      --bucket "$R2_BUCKET" \
+      --key "$VERSIONS_KEY" \
+      "$WORK_DIR/existing-versions.json" \
+      --endpoint-url "$ENDPOINT" >/dev/null 2>&1; then
+  EXISTING_VERSIONS="$WORK_DIR/existing-versions.json"
 fi
 
 # ── Build the manifest ─────────────────────────────────────────────────
@@ -222,6 +237,23 @@ if [[ -n "$EXISTING_MANIFEST" ]]; then
   RENDER_ARGS+=("--existing=${EXISTING_MANIFEST}")
 fi
 
+# The version index is rendered by a separate script from the manifest:
+# the manifest keeps ONE version (the newest) and the index keeps them
+# ALL. Their merge rules differ, so their renderers differ.
+VERSIONS_ARGS=(
+  "--version=${VERSION}"
+  "--pub-date=$(date -u +"%Y-%m-%dT%H:%M:%SZ")"
+  "--notes=${NOTES:-vault ${VERSION} (channel: ${CHANNEL})}"
+  "--url=${ARCHIVE_URL}"
+  "--signature-file=${SIG_PATH}"
+  "--targets=${TARGETS_ARG}"
+  "--channel=${CHANNEL}"
+  "--out=${WORK_DIR}/versions.json"
+)
+if [[ -n "$EXISTING_VERSIONS" ]]; then
+  VERSIONS_ARGS+=("--existing=${EXISTING_VERSIONS}")
+fi
+
 # Repairing a publication that was broken and therefore never reachable
 # (a manifest published against the wrong hostname, say) requires the
 # target's URL to change for a version that is already published. The
@@ -234,6 +266,7 @@ if [[ "${VAULT_UPDATER_REPOINT:-false}" == "true" ]]; then
 fi
 
 "$PYTHON" "$SCRIPT_DIR/render-manifest.py" "${RENDER_ARGS[@]}"
+"$PYTHON" "$SCRIPT_DIR/render-versions.py" "${VERSIONS_ARGS[@]}"
 
 echo "publish-update: manifest targets: ${TARGETS_ARG}" >&2
 
@@ -265,11 +298,18 @@ aws s3 cp "$WORK_DIR/manifest.json" "s3://${R2_BUCKET}/${MANIFEST_KEY}" \
   --content-type application/json >/dev/null
 echo "  ok"
 
+echo "→ uploading version index to s3://${R2_BUCKET}/${VERSIONS_KEY}"
+aws s3 cp "$WORK_DIR/versions.json" "s3://${R2_BUCKET}/${VERSIONS_KEY}" \
+  --endpoint-url "$ENDPOINT" \
+  --content-type application/json >/dev/null
+echo "  ok"
+
 echo
 echo "── Done ──"
 echo "  side-car:  $ARCHIVE_URL"
 echo "  signature: ${PUBLIC_BASE}/${VERSION}/${SIG_NAME}"
 echo "  manifest:  ${PUBLIC_BASE}/manifest.json"
+echo "  versions:  ${PUBLIC_BASE}/versions.json"
 echo
 echo "Run \`cargo-tauri signer verify -p <pubkey> <side-car> <sig>\` locally"
 echo "to re-verify the signature before declaring an install for manual QA."

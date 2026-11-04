@@ -19,6 +19,7 @@ DIR="$(cd "$(dirname "$0")" && pwd)"
 SCRIPT="$DIR/publish-update.sh"
 LOAD_ENV="$DIR/load-updater-env.sh"
 RENDER="$DIR/render-manifest.py"
+RENDER_VERSIONS="$DIR/render-versions.py"
 PROVISION="$DIR/provision-r2-bucket.sh"
 
 fail=0
@@ -82,6 +83,7 @@ echo "→ syntax"
 expect_exit "publish-update.sh is bash-clean" 0 bash -n "$SCRIPT"
 expect_exit "load-updater-env.sh is bash-clean" 0 bash -n "$LOAD_ENV"
 expect_exit "render-manifest.py compiles" 0 "$PYTHON" -m py_compile "$RENDER"
+expect_exit "render-versions.py compiles" 0 "$PYTHON" -m py_compile "$RENDER_VERSIONS"
 expect_exit "provision-r2-bucket.sh is bash-clean" 0 bash -n "$PROVISION"
 
 # 2. Usage on missing args
@@ -436,6 +438,148 @@ else
   echo "  ✗ could not determine the manifest host or the provisioned host"
   fail=1
 fi
+
+# ── 8n. The public version index ────────────────────────────────────────
+#
+# The manifest describes ONE version (the newest) — that is what the
+# plugin needs. The downloads page needs the HISTORY: every published
+# version with its notes and its per-platform files. That is the version
+# index, and it is what the marketing site reads.
+echo
+echo "→ version index"
+
+expect_exit "render-versions.py compiles" 0 "$PYTHON" -m py_compile "$RENDER_VERSIONS"
+
+render_versions() {
+  "$PYTHON" "$RENDER_VERSIONS" \
+    --version="$1" \
+    --pub-date="$2" \
+    --notes="$3" \
+    --url="$4" \
+    --signature-file="$FIXTURE_DIR/app.tar.gz.sig" \
+    --targets="$5" \
+    --channel=beta \
+    "${@:6}"
+}
+
+# 8n-1. A first publish produces an index with one version.
+render_versions "0.1.0" "2026-11-03T12:00:00Z" "first release" \
+  "https://updates.functionfly.com/vault/beta/0.1.0/app.AppImage" \
+  "linux-x86_64-appimage" \
+  --out="$FIXTURE_DIR/versions.json"
+
+expect_exit "render-versions.py writes an index" 0 test -s "$FIXTURE_DIR/versions.json"
+
+# 8n-2. A SECOND publish ADDS a version rather than replacing the index.
+#       Replacing it would erase the history the page exists to show.
+render_versions "0.2.0" "2026-11-04T12:00:00Z" "second release" \
+  "https://updates.functionfly.com/vault/beta/0.2.0/app.AppImage" \
+  "linux-x86_64-appimage" \
+  --existing="$FIXTURE_DIR/versions.json" \
+  --out="$FIXTURE_DIR/versions2.json"
+
+if "$PYTHON" - "$FIXTURE_DIR/versions2.json" <<'PY_EOF'
+import json
+import sys
+
+with open(sys.argv[1], "r", encoding="utf-8") as handle:
+    index = json.load(handle)
+
+versions = index["versions"]
+assert len(versions) == 2, [v["version"] for v in versions]
+# Newest first.
+assert versions[0]["version"] == "0.2.0", versions[0]["version"]
+assert versions[1]["version"] == "0.1.0", versions[1]["version"]
+# Each version carries its OWN notes — that is the "features per version".
+assert versions[0]["notes"] == "second release", versions[0]["notes"]
+assert versions[1]["notes"] == "first release", versions[1]["notes"]
+# …and its own per-platform URL.
+assert versions[0]["platforms"]["linux-x86_64-appimage"]["url"].endswith("0.2.0/app.AppImage")
+assert versions[1]["platforms"]["linux-x86_64-appimage"]["url"].endswith("0.1.0/app.AppImage")
+# The signature is CONTENT, not a URL.
+import base64
+base64.b64decode(versions[0]["platforms"]["linux-x86_64-appimage"]["signature"], validate=True)
+PY_EOF
+then
+  echo "  ✓ a second publish adds a version and keeps the older one"
+else
+  echo "  ✗ the version index did not accumulate the older version"
+  fail=1
+fi
+
+# 8n-3. A later platform for a version ALREADY in the index MERGES into
+#       that entry rather than adding a duplicate. One version, one entry.
+render_versions "0.1.0" "2026-11-03T12:00:00Z" "first release" \
+  "https://updates.functionfly.com/vault/beta/0.1.0/app.dmg" \
+  "darwin-aarch64" \
+  --existing="$FIXTURE_DIR/versions.json" \
+  --out="$FIXTURE_DIR/versions3.json"
+
+if "$PYTHON" - "$FIXTURE_DIR/versions3.json" <<'PY_EOF'
+import json
+import sys
+
+with open(sys.argv[1], "r", encoding="utf-8") as handle:
+    index = json.load(handle)
+
+versions = index["versions"]
+assert len(versions) == 1, [v["version"] for v in versions]
+platforms = versions[0]["platforms"]
+assert set(platforms) == {"linux-x86_64-appimage", "darwin-aarch64"}, sorted(platforms)
+assert platforms["darwin-aarch64"]["url"].endswith("app.dmg")
+PY_EOF
+then
+  echo "  ✓ a second platform merges into the existing version entry"
+else
+  echo "  ✗ the version index did not merge the platform"
+  fail=1
+fi
+
+# 8n-4. Version ordering is NUMERIC, not lexical: 0.10.0 must sort above
+#       0.9.0. A string sort gets this backwards.
+render_versions "0.10.0" "2026-11-05T12:00:00Z" "ten" \
+  "https://updates.functionfly.com/vault/beta/0.10.0/app.AppImage" \
+  "linux-x86_64-appimage" \
+  --existing="$FIXTURE_DIR/versions2.json" \
+  --out="$FIXTURE_DIR/versions4.json"
+
+if "$PYTHON" - "$FIXTURE_DIR/versions4.json" <<'PY_EOF'
+import json
+import sys
+
+with open(sys.argv[1], "r", encoding="utf-8") as handle:
+    index = json.load(handle)
+
+order = [v["version"] for v in index["versions"]]
+assert order[0] == "0.10.0", order
+assert order[1] == "0.2.0", order
+PY_EOF
+then
+  echo "  ✓ versions sort numerically, not lexically"
+else
+  echo "  ✗ versions sorted lexically (0.10.0 before 0.2.0)"
+  fail=1
+fi
+
+# 8n-5. A corrupt index is a hard error: silently resetting it would
+#       erase the published history.
+printf '{ not json\n' > "$FIXTURE_DIR/corrupt-versions.json"
+expect_exit "a corrupt existing index is refused → exit 1" 1 \
+  "$PYTHON" "$RENDER_VERSIONS" \
+    --version=0.1.0 \
+    --pub-date=2026-11-03T12:00:00Z \
+    --url="$BASE_URL/app.tar.gz" \
+    --signature-file="$FIXTURE_DIR/app.tar.gz.sig" \
+    --targets=linux-x86_64 \
+    --existing="$FIXTURE_DIR/corrupt-versions.json"
+
+# 8n-6. The publish script must upload the index, or the page reads a
+#       document that never changes.
+expect_true "publish-update.sh uploads the version index" \
+  grep -q 'VERSIONS_KEY' "$SCRIPT"
+
+expect_true "publish-update.sh renders the version index" \
+  grep -q 'render-versions.py' "$SCRIPT"
 
 # ── 9. The artefact → manifest-target mapping ───────────────────────────
 #

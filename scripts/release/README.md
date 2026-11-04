@@ -16,6 +16,7 @@ side-car.
 | `publish-update.sh <channel> <version> <side-car> <sig> [target]` | Uploads one side-car + `.sig` and merges that platform's entry into the channel manifest.                    |
 | `publish-updater-assets.sh <channel> <version> <dir>`   | Publishes every updater artefact in a directory, building one manifest across all platforms.                             |
 | `render-manifest.py`                                     | The manifest contract, in one place. Emits valid JSON and refuses a target triple, a non-base64 signature, or a repointed platform. |
+| `render-versions.py`                                    | The channel's version INDEX (`vault/<channel>/versions.json`): every published version with its notes and per-platform files. What the marketing site's downloads page reads. |
 | `updater-targets.py`                                     | Maps an artefact filename to the manifest target keys the plugin looks up.                                               |
 | `publish-update.test.sh`                                 | Smoke checks: arg parsing, the manifest contract, the artefact→target mapping, and an optional mock-R2 round-trip.       |
 | `mock-r2.py`                                             | Stateful S3-compatible mock for testing `publish-update.sh` without touching real R2.                                  |
@@ -176,7 +177,6 @@ off by default, and the release test suite asserts that it stays off.
 ## Tauri updater schema
 
 `publish-update.sh` writes the canonical `tauri-plugin-updater` v2 manifest:
-
 ```json
 {
   "version": "0.1.2",
