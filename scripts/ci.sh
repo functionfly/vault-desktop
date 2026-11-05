@@ -167,6 +167,12 @@ job_rust() {
     bash -c 'cd src-tauri && cargo test --test orchestrator_mock'
   run_step rust "cargo test --test device_flow" \
     bash -c 'cd src-tauri && cargo test --test device_flow'
+  # The published-artefact contract: fetch the live stable manifest and
+  # the artefact it points at, and verify the signature against the key
+  # compiled into the binary. This is the end-to-end proof that an
+  # installed client can verify and install the published update.
+  run_step rust "cargo test --test published_artifact_contract" \
+    bash -c 'cd src-tauri && cargo test --test published_artifact_contract'
 }
 
 # ── Job: build (the slow one) ───────────────────────────────────────────
@@ -276,6 +282,7 @@ job_check_parity() {
         "cargo test --test device_flow" \
         "cargo test --test updater_config" \
         "cargo test --test keychain_smoke" \
+        "cargo test --test published_artifact_contract" \
         "bunx tauri build --no-bundle" \
         "scripts/check-no-internal-leaks.sh" \
         "scripts/release/publish-update.test.sh" \

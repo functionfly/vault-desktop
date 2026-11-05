@@ -111,3 +111,11 @@ mockito = "1.7.2"
 # runtime, rather than with a second implementation that could disagree.
 minisign-verify = "0.3.0"
 serde_json = "1.0.151"
+# The published-artefact contract test fetches the live updater manifest
+# and the artefact it points at, over HTTPS, and verifies the signature
+# with the same minisign implementation the plugin uses at runtime.
+#
+# It uses the crate's OWN HTTP client so the test exercises the same TLS
+# stack the application does. The `blocking` feature is enabled here
+# only — the application itself is fully async and does not want it.
+reqwest = { version = "0.13.4", default-features = false, features = ["json", "rustls", "blocking"] }

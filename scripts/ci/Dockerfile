@@ -68,8 +68,23 @@ WORKDIR /src
 COPY package.json bun.lock ./
 RUN bun install --frozen-lockfile
 
+# The Rust dependency layer needs the SOURCE FILES to exist, not just
+# the manifest.
+#
+# `Cargo.toml` declares `[lib] name = "functionfly_vault_desktop_lib"`,
+# and cargo refuses to PARSE a manifest whose library target has no
+# file: "can't find library `functionfly_vault_desktop_lib`, rename
+# file to `src/lib.rs` or specify lib.path". Copying only
+# Cargo.toml + Cargo.lock therefore fails at `cargo fetch` with a
+# manifest error that reads like a broken Cargo.toml rather than a
+# missing source file.
+#
+# The placeholders are overwritten by the `COPY . .` below.
 COPY src-tauri/Cargo.toml src-tauri/Cargo.lock ./src-tauri/
-RUN cd src-tauri && cargo fetch --locked
+RUN mkdir -p src-tauri/src \
+ && printf '// placeholder\n' > src-tauri/src/lib.rs \
+ && printf 'fn main() {}\n' > src-tauri/src/main.rs \
+ && cd src-tauri && cargo fetch --locked
 
 COPY . .
 
