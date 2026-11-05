@@ -5,9 +5,31 @@ Built on Tauri v2 (Rust core + React webview) and packed into a single binary
 for Windows, macOS, and Linux.
 
 > **Status: 2026-11-04 — v1.0.0.**
-> Rust core: `cargo clippy --all-targets -- -D warnings` clean; **125 Rust tests** passing (80 unit + 19 orchestrator-mock + 10 device-flow + 6 security-contract + 4 updater-artefact-contract + 4 updater-config + 2 OS-keychain). React bundle: `tsc` + `vite build` clean, **100 vitest** passing.
+> Rust core: `cargo clippy --all-targets -- -D warnings` clean; **125 Rust tests** passing (80 unit + 19 orchestrator-mock + 10 device-flow + 6 security-contract + 4 updater-artefact-contract + 4 updater-config + 2 OS-keychain). React bundle: `tsc` + `vite build` clean, **103 vitest** passing.
 > Signed auto-update is wired with the Ed25519 public key compiled into the binary, so an installed client can verify updates without any environment variable. The webview runs under a strict Content Security Policy, and the IPC surface has been through a STRIDE review — see [`docs/SECURITY-REVIEW.md`](docs/SECURITY-REVIEW.md).
 > The OS keychain round-trip, the release-manifest contract and the leak guard are all automated and run in the portable CI runner. Code-signing configuration is in place but the certificates are not provisioned, so the installers are not yet signed by a platform vendor.
+
+## Screens
+
+The interface, as it actually is. These are the real UI rendered against
+the browser mock (see [Screenshots](#screenshots) below) — every value in
+them is fictional.
+
+| Secrets | A secret's detail |
+| --- | --- |
+| ![The secret list](docs/screenshots/secrets.png) | ![A secret's detail view](docs/screenshots/secret-detail.png) |
+
+| Audit log | Dynamic credentials |
+| --- | --- |
+| ![The audit log](docs/screenshots/audit-log.png) | ![Dynamic credentials](docs/screenshots/dynamic-credentials.png) |
+
+| Capabilities | Vault MFA |
+| --- | --- |
+| ![Capability grants](docs/screenshots/capabilities.png) | ![The tenant's vault MFA policy](docs/screenshots/vault-mfa.png) |
+
+| Import / export | Updater |
+| --- | --- |
+| ![Metadata-only import and export](docs/screenshots/import-export.png) | ![The signed auto-update channel](docs/screenshots/updater.png) |
 
 ## What it does
 
@@ -41,6 +63,41 @@ Secret values are **encrypted locally** before they leave the process: the
 webview passes plaintext to the Rust core, which derives the key from the
 unlock passphrase and sends only the `encrypted_data` payload to the
 orchestrator. The server never sees a plaintext secret.
+
+## Screenshots
+
+The images in [Screens](#screens) are the real interface, rendered in a
+browser against the app's own React code.
+
+### Why there is a browser mock
+
+The app is a Tauri application: its UI is a React webview talking to a
+Rust core over an IPC channel. Opened in a plain browser there is no
+host, so every IPC call throws and the page renders nothing.
+
+`src/lib/browser-mock.ts` stands in for the Rust core when the app is
+loaded with `?mock=1` **and** it is not running inside Tauri. It answers
+the same commands with the same shapes, using fictional data — no real
+tenant, no real secret.
+
+Three properties keep it out of the shipped app:
+
+1. It is behind `import.meta.env.DEV`, so the production bundle contains
+   no mock code path at all.
+2. It is behind a dynamic `import()`, so it is a separate chunk that is
+   never fetched in production.
+3. `shouldInstallMock()` returns false when `__TAURI_INTERNALS__` is
+   present, so the real app can never install it even in a dev build.
+
+### Regenerating them
+
+```bash
+bun run dev
+# then open http://127.0.0.1:5184/?mock=1
+```
+
+The mock data lives at the top of `src/lib/browser-mock.ts`. Change it
+and reload to see the new data.
 
 ## Architecture
 
