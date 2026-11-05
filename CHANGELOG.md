@@ -184,6 +184,27 @@ the full STRIDE review of the IPC surface.
 - **Total: 225 tests, all passing.** `cargo clippy --all-targets -- -D
   warnings` is clean, and `tsc --noEmit` is clean.
 
+### What shipped
+
+- **Windows** — an MSI and an NSIS installer, both signed with the
+  Ed25519 updater key. Published to the `stable` updater channel at
+  `https://updates.functionfly.com/vault/stable/manifest.json`, and
+  verified over the wire: the published artefact downloads and its
+  signature validates against the key compiled into the binary.
+- **Linux** — an AppImage and a deb, signed the same way.
+- The repository is **public**, with branch protection on `main` and
+  `develop`.
+
+### Known gaps in this release
+
+- **macOS is not part of this release.** The macOS artefact requires a
+  macOS build host, and GitHub Actions cannot get a runner assigned in
+  this organisation. The release ships Windows and Linux; macOS follows
+  when a build host is available.
+- **The installers are not code-signed by a platform vendor.** The
+  updater signature protects the update channel; it does not satisfy
+  Gatekeeper or SmartScreen.
+
 ## [0.1.0] — 2026-11-03 — preview build
 
 > **Corrected 2026-11-04.** This release was previously described here
