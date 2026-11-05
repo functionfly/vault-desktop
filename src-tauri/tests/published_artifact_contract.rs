@@ -223,9 +223,8 @@ fn the_published_artefact_signature_verifies() {
         // `verify` compares the key ids itself and returns
         // `UnexpectedKeyId` when they differ, so a signature made with a
         // different key is rejected here too.
-        key.verify(&artefact, &signature, false).unwrap_or_else(|e| {
-            panic!("{platform}: the published artefact does not verify: {e}")
-        });
+        key.verify(&artefact, &signature, false)
+            .unwrap_or_else(|e| panic!("{platform}: the published artefact does not verify: {e}"));
 
         println!(
             "{platform}: signature verified over the wire ({} bytes from {url})",
