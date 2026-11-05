@@ -51,6 +51,38 @@
 #
 # This script does NOT need the signing key: the `.sig` file is an input,
 # not something it produces. It only needs upload credentials.
+#
+# ── NEVER REPUBLISH A VERSION ─────────────────────────────────────────────
+#
+# The artefact URL is `vault/<channel>/<version>/<filename>`. The CDN
+# caches that URL, and the cache outlives the object: overwriting the
+# object in R2 does NOT change what the edge serves.
+#
+# So republishing a version means the manifest can carry a NEW signature
+# while the CDN still serves the OLD bytes. An installed client fetches
+# both, verifies the bytes against the signature, and the update is
+# REJECTED — with an error that looks like a signing fault rather than a
+# cache fault.
+#
+# That is not theoretical. It happened during the v1.0.0 launch
+# preparation: v1.0.0 was published with a broken build, fixed, and
+# republished under the same version. R2 served the new bytes; the CDN
+# kept serving the old ones for the whole TTL. A query-string bust
+# (`?cb=1`) returned the new bytes, which is what identified it as edge
+# caching rather than a failed upload.
+#
+# The fix is to publish a NEW VERSION. A new version is a new path, so
+# it is a new cache entry. v1.0.1 exists for exactly this reason.
+#
+# If a version genuinely has to be republished, the CDN cache for
+# `vault/<channel>/*` must be purged first. That needs a Cloudflare
+# token with cache-purge permission, which the operator's current
+# tokens do not have.
+#
+# `render-manifest.py --repoint` (gated behind VAULT_UPDATER_REPOINT)
+# exists for the same reason: repointing a LIVE version's URL is
+# refused by default, because clients that already cached the manifest
+# would then be sent to bytes they have not seen.
 
 set -euo pipefail
 

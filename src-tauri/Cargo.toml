@@ -1,6 +1,6 @@
 [package]
 name = "functionfly-vault-desktop"
-version = "1.0.0"
+version = "1.0.1"
 description = "Cross-platform zero-knowledge vault client for FunctionFly"
 edition = "2021"
 # MSRV. The Tauri v2 dependency graph requires 1.90 (tauri-macros,
