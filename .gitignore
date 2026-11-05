@@ -37,6 +37,16 @@ logs/
 .internal-identifiers.local
 internal-identifiers.txt
 
+# Git bundles. A bundle carries the ENTIRE history of whatever it was
+# made from — including any commit that was later rewritten away. One
+# of these in the tree is a full copy of everything the repository has
+# ever held, so it must never be committed.
+*.bundle
+
+# Release artefacts that the pipeline writes into the working tree.
+# `release.yml` renders the release body here before uploading it.
+release-notes.md
+
 # Generated evidence / smoke run logs
 artifacts/
 /tmp/

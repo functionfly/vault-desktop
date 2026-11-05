@@ -3,6 +3,35 @@
 All notable changes to FunctionFly Vault Desktop are recorded here. The
 project follows [Semantic Versioning](https://semver.org/).
 
+## [1.0.1] — 2026-11-04
+
+### Fixed
+
+- **The app rendered a blank window.** `package.json` declared `react` as
+  `^19.3.0` and `react-dom` as `^19.3.1`. Those resolved to react@19.3.0
+  and react-dom@19.3.1, and react-dom@19.3.1 declares
+  `peerDependencies: { react: "^19.3.1" }` — so the install violated its
+  own peer requirement, and React 19 threw:
+
+  > Incompatible React versions: The "react" and "react-dom" packages
+  > must have the exact same version.
+
+  The throw happens inside react-dom's client entry point, before the
+  app mounts, so there was no UI and no visible error. Both packages
+  are now pinned to the exact same version, and a test asserts they
+  stay that way — including that the declared `react` satisfies
+  react-dom's own peer requirement.
+
+- **Republishing a version does not work.** The CDN caches
+  `vault/<channel>/<version>/…`, and the cache outlives the object:
+  overwriting the object in R2 does not change what the edge serves. So
+  a republished version can have a NEW signature in the manifest while
+  the CDN still serves the OLD bytes, and the update is rejected at
+  install time with an error that looks like a signing fault rather
+  than a cache fault. A new version is a new path, and so a new cache
+  entry — which is why this release exists. See the note in
+  `scripts/release/publish-update.sh`.
+
 ## [1.0.0] — 2026-11-04 — public launch
 
 The first public release of FunctionFly Vault Desktop, and the first
@@ -183,6 +212,39 @@ the full STRIDE review of the IPC surface.
   and clipboard helpers behave under hostile storage.
 - **Total: 225 tests, all passing.** `cargo clippy --all-targets -- -D
   warnings` is clean, and `tsc --noEmit` is clean.
+
+### What shipped
+
+- **Windows** — an MSI and an NSIS installer, both signed with the
+  Ed25519 updater key. Published to the `stable` updater channel at
+  `https://updates.functionfly.com/vault/stable/manifest.json`, and
+  verified over the wire: the published artefact downloads and its
+  signature validates against the key compiled into the binary.
+- **Linux** — an AppImage and a deb, signed the same way, built in the
+  portable CI container (which carries the Tauri v2 Linux build
+  dependencies).
+- The repository is **public**, with branch protection on `main` and
+  `develop`. The gates are the portable runner (`scripts/ci.sh`), which
+  publishes its result back to the pull request as a check run —
+  GitHub Actions parses workflows in this organisation but cannot get a
+  runner assigned, so it never gates anything.
+- The interface is documented in [`docs/screenshots/`](docs/screenshots),
+  rendered in a browser against the app's own React code.
+
+### Known gaps in this release
+
+- **macOS is not part of this release.** The macOS artefact requires a
+  macOS build host, and GitHub Actions cannot get a runner assigned in
+  this organisation. The release ships Windows and Linux; macOS follows
+  when a build host is available.
+- **The installers are not code-signed by a platform vendor.** The
+  updater signature protects the update channel; it does not satisfy
+  Gatekeeper or SmartScreen.
+- **The CDN cache outlives the object.** A republished version is
+  served stale bytes until the cache expires; a new version is needed
+  for a corrected release. Purging the cache needs a Cloudflare token
+  with cache-purge permission, which the operator's current tokens do
+  not have.
 
 ## [0.1.0] — 2026-11-03 — preview build
 

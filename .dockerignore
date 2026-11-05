@@ -1,0 +1,39 @@
+# Docker build context exclusions.
+#
+# Without this, `docker build` sends the whole working tree to the
+# daemon — including `src-tauri/target/`, which is gigabytes of Rust
+# build output that the image never uses. The first build of the CI
+# image transferred 150 MB+ of context before it even started.
+#
+# The image builds the app itself, so the build output and the
+# dependencies are deliberately excluded.
+
+# Build output
+target/
+src-tauri/target/
+dist/
+node_modules/
+
+# Local state that must never enter an image
+.git/
+.gitignore
+.internal-identifiers.local
+internal-identifiers.txt
+*.bundle
+*.env
+.env.local
+
+# Editor / OS noise
+.DS_Store
+.idea/
+.vscode/
+*.swp
+*.swo
+Thumbs.db
+
+# Python bytecode caches
+__pycache__/
+*.py[cod]
+
+# macOS junk
+*.dmg.tmp

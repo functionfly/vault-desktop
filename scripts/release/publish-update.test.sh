@@ -630,15 +630,25 @@ expect_targets "macOS universal app → both architectures" \
   "darwin-aarch64-app,darwin-aarch64,darwin-x86_64-app,darwin-x86_64"
 
 expect_targets "Windows NSIS → nsis key + generic key" \
-  "functionfly-vault-desktop_x64-setup.nsis.zip" \
+  "functionfly-vault-desktop_x64-setup.exe" \
   "windows-x86_64-nsis,windows-x86_64"
 
 expect_targets "Windows MSI → msi key only" \
+  "functionfly-vault-desktop_x64_en-US.msi" \
+  "windows-x86_64-msi"
+
+# The v1 zip forms still map, so an artefact produced by an older
+# pipeline is not orphaned by the correction.
+expect_targets "Windows NSIS (v1 zip form) still maps" \
+  "functionfly-vault-desktop_x64-setup.nsis.zip" \
+  "windows-x86_64-nsis,windows-x86_64"
+
+expect_targets "Windows MSI (v1 zip form) still maps" \
   "functionfly-vault-desktop_x64_en-US.msi.zip" \
   "windows-x86_64-msi"
 
 expect_exit "an installer that is not an updater artefact is rejected → exit 1" 1 \
-  "$PYTHON" "$DIR/updater-targets.py" "functionfly-vault-desktop_0.1.0_amd64.exe"
+  "$PYTHON" "$DIR/updater-targets.py" "functionfly-vault-desktop_0.1.0_amd64.tar.gz"
 
 # The Tauri v1 artefact names must be REJECTED, not mapped. The v2
 # bundler never produces them, so a manifest entry built from one would
@@ -664,8 +674,8 @@ names = [
     "functionfly-vault-desktop_0.1.0_amd64.rpm",
     "functionfly-vault-desktop_aarch64.app.tar.gz",
     "functionfly-vault-desktop_universal.app.tar.gz",
-    "functionfly-vault-desktop_x64-setup.nsis.zip",
-    "functionfly-vault-desktop_x64_en-US.msi.zip",
+    "functionfly-vault-desktop_x64-setup.exe",
+    "functionfly-vault-desktop_x64_en-US.msi",
 ]
 
 pattern = re.compile(

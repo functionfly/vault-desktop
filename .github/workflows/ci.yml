@@ -116,12 +116,17 @@ jobs:
         # `--test keychain_smoke` exercises the real OS credential store.
         # It skips with a notice on a headless runner (no Secret Service),
         # and fails hard on macOS/Windows, where a keychain always exists.
+        # `--test published_artifact_contract` fetches the LIVE stable
+        # manifest and the artefact it points at, and verifies the
+        # signature against the key compiled into the binary. It skips
+        # with a notice when the CDN is unreachable.
         run: |
           cargo test --lib
           cargo test --test orchestrator_mock
           cargo test --test device_flow
           cargo test --test updater_config
           cargo test --test keychain_smoke
+          cargo test --test published_artifact_contract
 
   # ── Cross-platform compile matrix ─────────────────────────────────────────
   # Proves the crate compiles and the webview bundles on every shipping OS.
