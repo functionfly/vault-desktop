@@ -94,6 +94,18 @@ const EXPECTED: &[(&str, &[&str])] = &[
         ],
     ),
     (
+        // Windows v2 artefacts are the installers THEMSELVES, not
+        // zipped copies of them. The v1-compatible updater archived
+        // the installer into a zip; the v2 updater installs it
+        // directly. `createUpdaterArtifacts` is `true` here, so the
+        // bundler produces a bare `.exe` and a bare `.msi`.
+        "windows-x86_64-setup.exe",
+        &["windows-x86_64-nsis", "windows-x86_64"],
+    ),
+    ("windows-x86_64_en-US.msi", &["windows-x86_64-msi"]),
+    // The v1 forms are still accepted, so an artefact produced by an
+    // older pipeline still maps.
+    (
         "windows-x86_64-setup.nsis.zip",
         &["windows-x86_64-nsis", "windows-x86_64"],
     ),

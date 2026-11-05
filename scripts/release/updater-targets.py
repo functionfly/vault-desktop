@@ -59,14 +59,31 @@ import sys
 #   if package_types.contains(&PackageType::MacOsBundle) || has_v1_target {
 #
 # So the AppImage, deb and rpm are signed in place; the macOS .app is
-# always archived; the Windows installers are zipped. The tar.gz form
-# only exists for the legacy v1 updater, which this project does not
-# use.
+# always archived; and the WINDOWS INSTALLERS ARE ALSO SIGNED IN
+# PLACE — they are not wrapped.
+#
+# That last part is the correction. An earlier version of this table
+# listed `.msi.zip` and `.nsis.zip`, which are the Tauri **v1**
+# artefacts. The v1-compatible updater archives the Windows installer
+# into a zip; the v2 updater installs the installer directly. The
+# project's `createUpdaterArtifacts` is `true`, not `v1Compatible`, so
+# the bundler produces a BARE `.exe` (NSIS) and a BARE `.msi`.
+#
+# The table therefore had no entry that could match a real Windows
+# build: every Windows artefact was rejected with "not a recognised
+# updater artefact", and the Windows updater channel could never have
+# been published. The v1 `.zip` names are kept below as accepted
+# aliases, because a repository may still hold artefacts produced by an
+# older pipeline, and rejecting them would break a rollback.
 BUNDLES: list[tuple[str, str, str]] = [
     (".appimage", "linux", "appimage"),
     (".deb", "linux", "deb"),
     (".rpm", "linux", "rpm"),
     (".app.tar.gz", "darwin", "app"),
+    # Windows, v2 (what the bundler actually produces today).
+    (".msi", "windows", "msi"),
+    (".exe", "windows", "nsis"),
+    # Windows, v1 (legacy aliases, kept so an older artefact still maps).
     (".msi.zip", "windows", "msi"),
     (".nsis.zip", "windows", "nsis"),
 ]
