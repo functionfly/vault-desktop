@@ -265,6 +265,30 @@ libc headers and emits Mach-O objects), LLVM 17+ (for
 `cmake`. The script skips itself with an explicit notice when zig is
 absent, so a host without it still runs every other gate.
 
+### What the Actions minutes are spent on
+
+A macOS runner costs **10×** a Linux one and a Windows runner **2×**, so
+where the matrix runs is the single biggest lever on cost. The rules:
+
+| Trigger | What runs | Why |
+| --- | --- | --- |
+| Push or PR touching code | `frontend`, `rust`, `macos`, `release-scripts` — all on Linux | Fast feedback. The macOS gate type-checks the macOS build on a **Linux** runner, so macOS compile errors are caught here for the price of a Linux minute. |
+| Push to `main` | The above **plus** the 3-OS compile matrix **and** the portable runner | `main` holds released, tagged code. This is where the link-time and bundler differences between the three platforms are worth proving — and it happens a handful of times a year, not on every PR. |
+| `v*` tag | `release.yml` — the 3-OS build that produces the installers | Once per release. This one has to be a real 3-OS build; it is what the release *is*. |
+| PR | `dependency-review`, `branch-flow`, CodeQL | Security and convention gates. CodeQL runs once per PR — a push to `develop` is analysed by the PR analysis of the same commits, so it is not analysed twice. |
+
+A push or PR that only touches `**/*.md` or `docs/**` runs nothing at
+all: documentation cannot break the build, the tests or the release
+scripts.
+
+The `portable-runner` job runs the **whole** gate set, so on a pull
+request it would duplicate the `frontend` and `rust` jobs that already
+ran — two full compiles of the same tree. It therefore runs on a push to
+`main` only. That matches how this repository actually gates a merge:
+the portable runner *is* the gate, and it is run by hand on the
+operator's machine, where it publishes the `portable CI` status the
+branch protection requires.
+
 ### The release pipeline does not need Actions either
 
 `release-please` is a

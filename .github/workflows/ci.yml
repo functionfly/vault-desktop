@@ -14,8 +14,17 @@ name: CI
 on:
   push:
     branches: [main, develop]
+    paths-ignore:
+      # Documentation-only changes cannot break the build, the tests or
+      # the release scripts. Skipping them saves a full run on every
+      # README tweak.
+      - '**/*.md'
+      - 'docs/**'
   pull_request:
     branches: [main, develop]
+    paths-ignore:
+      - '**/*.md'
+      - 'docs/**'
   workflow_dispatch:
 
 permissions:
@@ -154,18 +163,38 @@ jobs:
         with:
           workspaces: src-tauri
 
+      - name: Cache zig
+        # The tarball is 55 MB. The cache key is the Zig version — not
+        # the commit — because the toolchain does not change with the
+        # repository.
+        uses: actions/cache@v4
+        with:
+          path: ~/.local/zig
+          key: zig-0.17.1-${{ runner.os }}-${{ runner.arch }}
+
       - name: Install zig
         # Zig bundles the macOS libc headers, so `zig cc` can compile the
         # C dependencies (ring, aws-lc-sys) for macOS on Linux.
+        #
+        # The cache step above restores it; this step is the fallback
+        # for a cold cache.
+        env:
+          ZIG_VERSION: 0.17.1
         run: |
-          ZIG_VERSION=0.17.1
-          curl -sSL --max-time 600 \
-            "https://ziglang.org/download/${ZIG_VERSION}/zig-x86_64-linux-${ZIG_VERSION}.tar.xz" \
-            -o /tmp/zig.tar.xz
-          mkdir -p "$HOME/.local"
-          tar -xJf /tmp/zig.tar.xz -C "$HOME/.local" --strip-components=1
-          mv "$HOME/.local/zig-x86_64-linux-${ZIG_VERSION}" "$HOME/.local/zig"
-          echo "$HOME/.local/zig" >> "$GITHUB_PATH"
+          set -euo pipefail
+          ZIG_ROOT="$HOME/.local/zig"
+          if [ -x "$ZIG_ROOT/zig" ] && "$ZIG_ROOT/zig" version | grep -q "$ZIG_VERSION"; then
+            echo "zig $ZIG_VERSION is already installed (restored from cache)."
+          else
+            curl -sSL --max-time 600 \
+              "https://ziglang.org/download/${ZIG_VERSION}/zig-x86_64-linux-${ZIG_VERSION}.tar.xz" \
+              -o /tmp/zig.tar.xz
+            rm -rf "$ZIG_ROOT"
+            mkdir -p "$HOME/.local"
+            tar -xJf /tmp/zig.tar.xz -C "$HOME/.local" --strip-components=1
+            mv "$HOME/.local/zig-x86_64-linux-${ZIG_VERSION}" "$ZIG_ROOT"
+          fi
+          echo "$ZIG_ROOT" >> "$GITHUB_PATH"
 
       - name: Install LLVM
         # llvm-install-name-tool is LLVM's build of Apple's
@@ -180,9 +209,23 @@ jobs:
 
   # ── Cross-platform compile matrix ─────────────────────────────────────────
   # Proves the crate compiles and the webview bundles on every shipping OS.
+  #
+  # COST. A macOS runner costs 10x a Linux one and a Windows runner 2x, so
+  # the three-OS matrix is the most expensive thing in this repository.
+  # It runs ONLY on a push to `main` — the branch that holds released,
+  # tagged code — and on a release tag. A pull request gets the Linux
+  # leg alone, which is enough to catch the mistakes that actually
+  # happen (a type error, a failing test, a broken script).
+  #
+  # The macOS leg is not lost: the `macos` job above type-checks the
+  # macOS build on a LINUX runner, so macOS compile errors are caught on
+  # every push for the price of a Linux minute. The multi-OS matrix is
+  # about link-time and bundler differences, not about whether the code
+  # compiles.
   build:
     name: build (${{ matrix.os }})
     needs: [frontend, rust]
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
     runs-on: ${{ matrix.os }}
     timeout-minutes: 45
     strategy:
@@ -411,8 +454,23 @@ jobs:
   #
   # It is NOT a second, weaker gate — it runs the identical steps, and
   # `--check-parity` fails the job if the two drift apart.
+  #
+  # COST. This job runs the WHOLE gate set, so on a pull request it
+  # duplicates the `frontend` and `rust` jobs that already ran: two
+  # full compiles of the same tree. It therefore runs on a push to
+  # `main` only, plus on a manual dispatch.
+  #
+  # That is consistent with how this repository actually gates a merge:
+  # the portable runner IS the gate (see the README), and it is run by
+  # hand on the operator's machine, where it publishes the `portable CI`
+  # status the branch protection requires. This workflow's job is the
+  # belt-and-braces proof that the two have not drifted — a job that
+  # needs no pull request to be useful.
   portable-runner:
     name: portable runner
+    if: >-
+      (github.event_name == 'push' && github.ref == 'refs/heads/main')
+      || github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-latest
     timeout-minutes: 60
     steps:

@@ -30,7 +30,31 @@ project follows [Semantic Versioning](https://semver.org/).
   vitest where the real counts are 129 and 105. The published-artefact
   contract suite was not mentioned at all.
 
+- **`client_construction_does_not_perform_user_io` was flaky.** It
+  asserted that `VaultClient::new()` returns in under 500 ms, but it was
+  measuring the *first* construction in the process — and that one pays a
+  one-time cost: `reqwest::Client::builder().build()` may touch DNS once
+  per process to resolve a platform root-certificate provider. On a host
+  with an unreachable resolver that is a DNS timeout (two nameservers at
+  five seconds each), so the test intermittently failed against a bound
+  that had nothing to do with the client's behaviour — it failed the
+  portable CI run on 2026-11-05 with 10.96 s. The measurement now
+  excludes the warm-up and covers the second construction, which is the
+  one a future blocking-call refactor would break.
+
 ### Changed
+
+- **The GitHub Actions minutes are now spent where they earn their
+  cost.** A macOS runner costs 10× a Linux one and a Windows runner 2×,
+  so the 3-OS compile matrix now runs **only on a push to `main`** — the
+  branch that holds released, tagged code — and not on every pull
+  request. macOS compile errors are still caught on every push, because
+  the macOS gate type-checks the macOS build on a *Linux* runner.
+  CodeQL no longer analyses the same commits twice (a push to `develop`
+  and the pull request that carries it), a push or pull request that
+  only touches `**/*.md` or `docs/**` runs nothing at all, and the zig
+  toolchain is cached instead of being re-downloaded (55 MB) on every
+  run. The rules are documented in the README.
 
 - The README now states plainly that there is **no macOS installer**,
   why (the release workflow's `macos-latest` job cannot start while the
