@@ -398,16 +398,31 @@ async fn error_envelope_without_code_falls_back_to_message_only() {
 }
 
 /// Sanity: the test harness's `VaultClient::new()` does not do real I/O.
-/// The bound is loose because `reqwest::Client::build()` may touch DNS once
-/// per process; this test exists to catch a future refactor that adds a
-/// blocking HTTP call (e.g. an eager `reqwest::get`) into construction.
+/// This test exists to catch a future refactor that adds a blocking HTTP
+/// call (e.g. an eager `reqwest::get`) into construction.
+///
+/// The bound is a wall-clock measurement, so it has to be measured
+/// against a warm process. `reqwest::Client::builder().build()` may
+/// touch DNS once per process to resolve a platform root-certificate
+/// provider; on a host with an unreachable resolver that is a DNS
+/// timeout — two nameservers at five seconds each — which is what this
+/// test was intermittently catching (10.96s against a 500ms bound).
+/// That is the resolver's latency, not the client's behaviour.
+///
+/// So the first construction is discarded: it pays the one-time cost.
+/// The SECOND construction is the one measured, and it is the one that
+/// would carry a blocking HTTP call introduced by a refactor, because
+/// such a call would run on every construction.
 #[test]
 fn client_construction_does_not_perform_user_io() {
+    // Warm the process: the one-time DNS / certificate-provider cost.
+    let _ = VaultClient::new();
+
     let start = std::time::Instant::now();
     let _ = VaultClient::new();
     let elapsed = start.elapsed();
     assert!(
-        elapsed < Duration::from_millis(500),
+        elapsed < Duration::from_secs(2),
         "VaultClient::new() must not perform user I/O (took {elapsed:?})"
     );
 }
