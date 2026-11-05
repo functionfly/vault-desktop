@@ -51,6 +51,38 @@
 #
 # This script does NOT need the signing key: the `.sig` file is an input,
 # not something it produces. It only needs upload credentials.
+#
+# ── NEVER REPUBLISH A VERSION ─────────────────────────────────────────────
+#
+# The artefact URL is `vault/<channel>/<version>/<filename>`. The CDN
+# caches that URL, and the cache outlives the object: overwriting the
+# object in R2 does NOT change what the edge serves.
+#
+# So republishing a version means the manifest can carry a NEW signature
+# while the CDN still serves the OLD bytes. An installed client fetches
+# both, verifies the bytes against the signature, and the update is
+# REJECTED — with an error that looks like a signing fault rather than a
+# cache fault.
+#
+# That is not theoretical. It happened during the v1.0.0 launch
+# preparation: v1.0.0 was published with a broken build, fixed, and
+# republished under the same version. R2 served the new bytes; the CDN
+# kept serving the old ones for the whole TTL. A query-string bust
+# (`?cb=1`) returned the new bytes, which is what identified it as edge
+# caching rather than a failed upload.
+#
+# The fix is to publish a NEW VERSION. A new version is a new path, so
+# it is a new cache entry. v1.0.1 exists for exactly this reason.
+#
+# If a version genuinely has to be republished, the CDN cache for
+# `vault/<channel>/*` must be purged first. That needs a Cloudflare
+# token with cache-purge permission, which the operator's current
+# tokens do not have.
+#
+# `render-manifest.py --repoint` (gated behind VAULT_UPDATER_REPOINT)
+# exists for the same reason: repointing a LIVE version's URL is
+# refused by default, because clients that already cached the manifest
+# would then be sent to bytes they have not seen.
 
 set -euo pipefail
 
@@ -174,18 +206,66 @@ for t in "${TARGETS[@]}"; do
 done
 
 # ── Paths ──────────────────────────────────────────────────────────────
-ARCHIVE_NAME="$(basename "$SIDECAR_PATH")"
+#
+# The ARCHIVE IS RENAMED BEFORE IT IS PUBLISHED.
+#
+# Tauri's bundler names the Windows installers after the product name,
+# which contains a space: `FunctionFly Vault_1.0.0_x64-setup.exe`. A
+# space is not fetchable as part of a URL — the client requests
+# `.../FunctionFly%20Vault_1.0.0_x64-setup.exe`, the CDN has no such
+# key, and the update fails with a 404 that looks like a broken channel
+# rather than a broken filename.
+#
+# So the name is normalised to something URL-safe before it becomes an
+# S3 key or a URL. This is safe: the signature covers the BYTES, not
+# the name. `src-tauri/tests/updater_artifact_contract.rs` verifies a
+# real artefact's signature with the same minisign implementation the
+# plugin uses at runtime.
+#
+# The transform is deliberately narrow: spaces become underscores and
+# anything outside `[A-Za-z0-9._-]` is dropped. It must be stable, so
+# the same artefact always publishes under the same key.
+normalise_name() {
+  local name="$1"
+  name="${name// /_}"
+  # Drop anything that is not URL-safe in a path segment.
+  name="$(printf '%s' "$name" | tr -cd 'A-Za-z0-9._-')"
+  printf '%s' "$name"
+}
+
+SOURCE_ARCHIVE_NAME="$(basename "$SIDECAR_PATH")"
+ARCHIVE_NAME="$(normalise_name "$SOURCE_ARCHIVE_NAME")"
 SIG_NAME="$(basename "$SIG_PATH")"
 
-if [[ "$SIG_NAME" != "${ARCHIVE_NAME}.sig" ]]; then
-  echo "publish-update: signature '${SIG_NAME}' does not match side-car '${ARCHIVE_NAME}'." >&2
+if [[ "$SIG_NAME" != "${SOURCE_ARCHIVE_NAME}.sig" ]]; then
+  echo "publish-update: signature '${SIG_NAME}' does not match side-car '${SOURCE_ARCHIVE_NAME}'." >&2
   echo "  Expected the .sig to sit next to the archive with the same basename." >&2
   exit 1
 fi
 
+WORK_DIR="$(mktemp -d)"
+cleanup() { rm -rf "$WORK_DIR"; }
+trap cleanup EXIT
+
+if [[ "$ARCHIVE_NAME" == "$SOURCE_ARCHIVE_NAME" ]]; then
+  # Publish under the source name when it is already safe.
+  PUBLISHED_ARCHIVE="$SIDECAR_PATH"
+  PUBLISHED_SIG="$SIG_PATH"
+else
+  # Copy to the normalised name, so the uploaded object's key and its
+  # contents agree.
+  PUBLISHED_ARCHIVE="$WORK_DIR/${ARCHIVE_NAME}"
+  PUBLISHED_SIG="$WORK_DIR/${ARCHIVE_NAME}.sig"
+  cp "$SIDECAR_PATH" "$PUBLISHED_ARCHIVE"
+  cp "$SIG_PATH" "$PUBLISHED_SIG"
+  echo "publish-update: renamed for publication:" >&2
+  echo "  ${SOURCE_ARCHIVE_NAME}" >&2
+  echo "  -> ${ARCHIVE_NAME}" >&2
+fi
+
 PUBLIC_BASE="${VAULT_UPDATER_PUBLIC_BASE:-https://updates.functionfly.com/vault/${CHANNEL}}"
 SIDECAR_KEY="vault/${CHANNEL}/${VERSION}/${ARCHIVE_NAME}"
-SIG_KEY="vault/${CHANNEL}/${VERSION}/${SIG_NAME}"
+SIG_KEY="vault/${CHANNEL}/${VERSION}/${ARCHIVE_NAME}.sig"
 MANIFEST_KEY="vault/${CHANNEL}/manifest.json"
 # The version index is the channel's HISTORY: every published version with
 # its notes and its per-platform files. The manifest above describes only
@@ -194,10 +274,6 @@ MANIFEST_KEY="vault/${CHANNEL}/manifest.json"
 # document to list every version with its features.
 VERSIONS_KEY="vault/${CHANNEL}/versions.json"
 ARCHIVE_URL="${PUBLIC_BASE}/${VERSION}/${ARCHIVE_NAME}"
-
-WORK_DIR="$(mktemp -d)"
-cleanup() { rm -rf "$WORK_DIR"; }
-trap cleanup EXIT
 
 EXISTING_MANIFEST=""
 if aws s3api get-object \
@@ -229,7 +305,7 @@ RENDER_ARGS=(
   "--pub-date=$(date -u +"%Y-%m-%dT%H:%M:%SZ")"
   "--notes=${NOTES:-vault ${VERSION} (channel: ${CHANNEL})}"
   "--url=${ARCHIVE_URL}"
-  "--signature-file=${SIG_PATH}"
+  "--signature-file=${PUBLISHED_SIG}"
   "--targets=${TARGETS_ARG}"
   "--out=${WORK_DIR}/manifest.json"
 )
@@ -245,7 +321,7 @@ VERSIONS_ARGS=(
   "--pub-date=$(date -u +"%Y-%m-%dT%H:%M:%SZ")"
   "--notes=${NOTES:-vault ${VERSION} (channel: ${CHANNEL})}"
   "--url=${ARCHIVE_URL}"
-  "--signature-file=${SIG_PATH}"
+  "--signature-file=${PUBLISHED_SIG}"
   "--targets=${TARGETS_ARG}"
   "--channel=${CHANNEL}"
   "--out=${WORK_DIR}/versions.json"
@@ -281,13 +357,13 @@ echo "  bucket:   $R2_BUCKET"
 echo
 
 echo "→ uploading side-car to s3://${R2_BUCKET}/${SIDECAR_KEY}"
-aws s3 cp "$SIDECAR_PATH" "s3://${R2_BUCKET}/${SIDECAR_KEY}" \
+aws s3 cp "$PUBLISHED_ARCHIVE" "s3://${R2_BUCKET}/${SIDECAR_KEY}" \
   --endpoint-url "$ENDPOINT" \
   --content-type application/octet-stream >/dev/null
 echo "  ok"
 
-echo "→ uploading signature to s3://${R2_BUCKET}/${SIG_KEY}"
-aws s3 cp "$SIG_PATH" "s3://${R2_BUCKET}/${SIG_KEY}" \
+echo "✓ uploading signature to s3://${R2_BUCKET}/${SIG_KEY}"
+aws s3 cp "$PUBLISHED_SIG" "s3://${R2_BUCKET}/${SIG_KEY}" \
   --endpoint-url "$ENDPOINT" \
   --content-type application/octet-stream >/dev/null
 echo "  ok"

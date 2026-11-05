@@ -49,8 +49,18 @@ RUN curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs \
  && chmod -R a+w $RUSTUP_HOME $CARGO_HOME
 
 # bun (the package manager the repo uses).
+#
+# BUN_INSTALL must be set explicitly. The official installer ignores
+# PATH and installs to "$HOME/.bun" unless BUN_INSTALL says otherwise,
+# so without it the binary lands in /root/.bun and the `chmod -R a+w
+# /usr/local/bun` below fails with "No such file or directory" — which
+# is how this layer broke.
+ENV BUN_INSTALL=/usr/local/bun
 RUN curl -fsSL https://bun.sh/install | bash \
- && chmod -R a+w /usr/local/bun
+ && chmod -R a+w /usr/local/bun \
+ && ln -sf /usr/local/bun/bin/bun /usr/local/bin/bun \
+ && ln -sf /usr/local/bun/bin/bun /usr/local/bin/bunx \
+ && bun --version
 
 WORKDIR /src
 
@@ -58,8 +68,23 @@ WORKDIR /src
 COPY package.json bun.lock ./
 RUN bun install --frozen-lockfile
 
+# The Rust dependency layer needs the SOURCE FILES to exist, not just
+# the manifest.
+#
+# `Cargo.toml` declares `[lib] name = "functionfly_vault_desktop_lib"`,
+# and cargo refuses to PARSE a manifest whose library target has no
+# file: "can't find library `functionfly_vault_desktop_lib`, rename
+# file to `src/lib.rs` or specify lib.path". Copying only
+# Cargo.toml + Cargo.lock therefore fails at `cargo fetch` with a
+# manifest error that reads like a broken Cargo.toml rather than a
+# missing source file.
+#
+# The placeholders are overwritten by the `COPY . .` below.
 COPY src-tauri/Cargo.toml src-tauri/Cargo.lock ./src-tauri/
-RUN cd src-tauri && cargo fetch --locked
+RUN mkdir -p src-tauri/src \
+ && printf '// placeholder\n' > src-tauri/src/lib.rs \
+ && printf 'fn main() {}\n' > src-tauri/src/main.rs \
+ && cd src-tauri && cargo fetch --locked
 
 COPY . .
 

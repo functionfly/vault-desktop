@@ -142,11 +142,12 @@ fn a_content_security_policy_is_configured() {
 fn plaintext_bearing_structs_do_not_derive_debug() {
     // `Debug` prints a struct's fields verbatim. On a type that holds
     // plaintext, that is a one-character-away leak into any log line.
+    //
+    // `DecryptedSecret` was deleted outright (it was dead code); it is
+    // still listed so that re-introducing it under the same name fails
+    // this gate rather than silently restoring the leak.
     let source = read("src-tauri/src/crypto.rs");
-    for (struct_name, derive_line) in [
-        ("DecryptedSecret", "DecryptedSecret"),
-        ("EncryptedData", "EncryptedData"),
-    ] {
+    for struct_name in ["DecryptedSecret", "EncryptedData"] {
         if let Some(idx) = source.find(&format!("pub struct {struct_name}")) {
             // Look at the derive attributes immediately above the struct.
             let head = &source[..idx];

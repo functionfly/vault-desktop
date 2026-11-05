@@ -61,10 +61,7 @@ use tokio::sync::{Mutex, MutexGuard};
 static PROBE_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
 
 async fn probe_lock() -> MutexGuard<'static, ()> {
-    PROBE_LOCK
-        .get_or_init(|| Mutex::new(()))
-        .lock()
-        .await
+    PROBE_LOCK.get_or_init(|| Mutex::new(())).lock().await
 }
 
 /// Unique-ish account material so a probe never collides with a real
