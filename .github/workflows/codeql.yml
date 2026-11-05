@@ -29,9 +29,19 @@ name: CodeQL
 
 on:
   push:
-    branches: [main, develop]
+    # Only `main`. A push to `develop` is covered by the pull_request
+    # analysis of the same commits, so analysing both analyses the same
+    # code twice for the price of one — and CodeQL is the most
+    # expensive workflow in this repository when Code Security is on.
+    branches: [main]
+    paths-ignore:
+      - '**/*.md'
+      - 'docs/**'
   pull_request:
     branches: [main, develop]
+    paths-ignore:
+      - '**/*.md'
+      - 'docs/**'
   schedule:
     # Weekly, Monday 05:32 UTC. Off the hour to avoid the GitHub Actions
     # scheduling congestion on the hour.
