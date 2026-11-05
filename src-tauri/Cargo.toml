@@ -1,6 +1,6 @@
 [package]
 name = "functionfly-vault-desktop"
-version = "0.1.0"
+version = "1.0.0"
 description = "Cross-platform zero-knowledge vault client for FunctionFly"
 edition = "2021"
 # MSRV. The Tauri v2 dependency graph requires 1.90 (tauri-macros,
@@ -44,7 +44,7 @@ reqwest = { version = "0.13.4", default-features = false, features = ["json", "r
 
 # Serialisation. Pinned to the same patch as studio-desktop.
 serde = { version = "1.0.229", features = ["derive"] }
-serde_json = "1.0.151"
+serde_json = "1.0.154"
 thiserror = "2"
 
 # Crypto. pbkdf2, aes-gcm, sha2 are exactly the primitives the dashboard's

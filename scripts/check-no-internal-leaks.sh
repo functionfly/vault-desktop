@@ -25,29 +25,54 @@ REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$REPO_ROOT"
 
 # Files allowed to carry these markers.
-ALLOWED=("docs/INTERNAL.md")
-
-# Everything that ships publicly. `docs/INTERNAL.md` is deliberately
-# absent from this list, and `.github/CODEOWNERS` is deliberately absent
-# because it must name real owners for branch protection to work at all.
 #
-# `CHANGELOG.md` IS scanned: it is copied verbatim into the GitHub
-# release notes, so a leak there reaches every subscriber's inbox. It
-# used to carry the build host's home directory and went unnoticed
-# because this list did not include it.
-PUBLISHABLE=(
-  README.md
-  CHANGELOG.md
-  docs/BRANCHING.md
-  scripts/release/KEY-FINGERPRINT.txt
-  scripts/release/*.sh
-  scripts/release/README.md
-  scripts/release/evidence/*.md
-  .github/workflows/*.yml
-  # The app's own config ships inside every binary, so it is as public
-  # as the README. It is scanned for every marker below.
-  src-tauri/tauri.conf.json
+# `docs/INTERNAL.md` is the documented home for the identifiers.
+#
+# THIS SCRIPT is also allowed, and has to be: it is a blocklist, so it
+# necessarily contains the values it looks for. It is a list of
+# identifiers, not credentials — the R2 secret access key is not in the
+# repository — but it is still why `docs/INTERNAL.md` is the first thing
+# to move when the repository is published.
+#
+# `.github/CODEOWNERS` must name real owners for branch protection to
+# work at all, so it is allowed too.
+ALLOWED=("docs/INTERNAL.md" "scripts/check-no-internal-leaks.sh" ".github/CODEOWNERS")
+
+# Everything else in the repository is scanned.
+#
+# This used to be a hand-maintained list of "publishable" files. That
+# list was incomplete, and an account id sat in
+# `scripts/release/README.md` for a release without the guard noticing:
+# the list is the guard's own weakest point, because a file nobody
+# thought to add to it is silently exempt.
+#
+# So the whole tree is scanned now, minus build output, vendored
+# dependencies and the explicitly allowed files above. There is no list
+# to forget to update.
+PUBLISHABLE=()
+while IFS= read -r -d '' f; do
+  PUBLISHABLE+=("$f")
+done < <(
+  find . \
+    \( -path ./.git -o -path ./node_modules -o -path ./dist -o -path ./target \) -prune -o \
+    \( -path ./src-tauri/target -o -path ./src-tauri/gen -o -path ./.release-please-manifest.json \) -prune -o \
+    -type f \
+    \( -name '*.rs' -o -name '*.ts' -o -name '*.tsx' -o -name '*.js' -o -name '*.mjs' \
+       -o -name '*.sh' -o -name '*.py' -o -name '*.md' -o -name '*.toml' -o -name '*.json' \
+       -o -name '*.yml' -o -name '*.yaml' -o -name '*.html' -o -name '*.css' \
+       -o -name '*.txt' -o -name '*.plist' -o -name '*.conf' -o -name 'Dockerfile*' \) \
+    -print0
 )
+
+# Strip the allowed files out of the scan set.
+scan_set=()
+for f in "${PUBLISHABLE[@]}"; do
+  keep=1
+  for a in "${ALLOWED[@]}"; do
+    if [[ "$f" == "./$a" ]]; then keep=0; break; fi
+  done
+  (( keep )) && scan_set+=("$f")
+done
 
 fail=0
 
@@ -69,18 +94,18 @@ check() {
     echo "         Move it to docs/INTERNAL.md, or replace it with a placeholder." >&2
     fail=1
   else
-    echo "ok  no $label outside docs/INTERNAL.md"
+    echo "ok  no $label outside the allowed files"
   fi
 }
 
 # 1. The Cloudflare R2 account id, in the exact form the scripts accept.
-check "R2 account id" '<R2 account id — see the private runbook>' "${PUBLISHABLE[@]}"
+check "R2 account id" '<R2 account id — see the private runbook>' "${scan_set[@]}"
 
 # 2. The dev-scoped R2 access key id.
-check "R2 access key id" '<R2 access key id — see the private runbook>' "${PUBLISHABLE[@]}"
+check "R2 access key id" '<R2 access key id — see the private runbook>' "${scan_set[@]}"
 
 # 3. The updater public-key fingerprint.
-check "updater key fingerprint" '<updater key fingerprint — see the private runbook>' "${PUBLISHABLE[@]}"
+check "updater key fingerprint" '<updater key fingerprint — see the private runbook>' "${scan_set[@]}"
 
 # 4. The public key material itself (base64 prefix).
 #
@@ -95,26 +120,25 @@ check "updater key fingerprint" '<updater key fingerprint — see the private ru
 # pasted into the README, the CHANGELOG, or the release scripts, where
 # it would be copied into release notes and published to users who have
 # no use for it. The config file is the ONE place it belongs, so it is
-# exempt from this check — and scanned for every other marker instead.
-check "updater pubkey prefix" 'dW50cnVzdGVkIGNvbW1lbnQ6IG1vbmlzaWdu' \
-  README.md CHANGELOG.md docs/BRANCHING.md \
-  scripts/release/KEY-FINGERPRINT.txt \
-  scripts/release/*.sh \
-  scripts/release/README.md \
-  scripts/release/evidence/*.md \
-  .github/workflows/*.yml
+# the ONE file exempt from this check — and scanned for every other
+# marker instead.
+pubkey_scan=()
+for f in "${scan_set[@]}"; do
+  [[ "$f" == "./src-tauri/tauri.conf.json" ]] && continue
+  pubkey_scan+=("$f")
+done
+check "updater pubkey prefix" 'dW50cnVzdGVkIGNvbW1lbnQ6IG1vbmlzaWdu' "${pubkey_scan[@]}"
 
 # 5. The maintainer's home directory, which leaks the build-host username.
-check "operator home path" '<operator home>' "${PUBLISHABLE[@]}"
+check "operator home path" '<operator home>' "${scan_set[@]}"
 
 # 6. Individual owner handles. CODEOWNERS and docs/INTERNAL.md are exempt:
 #    CODEOWNERS must name real owners for branch protection to work at all,
 #    and INTERNAL.md is the documented home for these values.
-check "owner handle" '@functionflycom|@CallReef' "${PUBLISHABLE[@]}"
+check "owner handle" '@functionflycom|@CallReef' "${scan_set[@]}"
 
 # 7. The signing private key must never appear anywhere in the repo.
-check "PRIVATE KEY block" 'BEGIN (OPENSSH |RSA |EC |)PRIVATE KEY' \
-  README.md CHANGELOG.md docs scripts .github src src-tauri/src
+check "PRIVATE KEY block" 'BEGIN (OPENSSH |RSA |EC |)PRIVATE KEY' "${scan_set[@]}"
 
 if (( fail != 0 )); then
   echo >&2
@@ -123,5 +147,5 @@ if (( fail != 0 )); then
 fi
 
 echo
-echo "No internal-only material outside docs/INTERNAL.md."
-echo "(${ALLOWED[*]} is the documented home for these values.)"
+echo "No internal-only material outside the allowed files."
+echo "(${ALLOWED[*]} are the documented homes for these values.)"

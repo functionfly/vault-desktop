@@ -200,7 +200,19 @@ fn a_built_artefact_and_its_signature_verify() {
         "the bundle dir exists but holds no .AppImage"
     );
 
-    let pubkey = Path::new("<operator key dir>/vault-key.json.pub");
+    // The operator's signing public key. The path is read from the
+    // environment so the build host's home directory is not baked into
+    // the source tree — this file ships in a public repository.
+    let pubkey = match std::env::var("VAULT_SIGNING_PUBKEY") {
+        Ok(p) if !p.is_empty() => PathBuf::from(p),
+        _ => {
+            eprintln!(
+                "SKIP: VAULT_SIGNING_PUBKEY is not set — the signature cannot \
+                 be verified without it."
+            );
+            return;
+        }
+    };
     if !pubkey.exists() {
         eprintln!(
             "SKIP: no signing public key at {} — the signature cannot be \
@@ -226,7 +238,7 @@ fn a_built_artefact_and_its_signature_verify() {
         let parsed = minisign_verify::Signature::decode(&sig_text)
             .unwrap_or_else(|e| panic!("{} is not a valid minisign signature: {e}", sig.display()));
 
-        let pub_text = decode_box(pubkey);
+        let pub_text = decode_box(&pubkey);
         let key_line = pub_text
             .lines()
             .nth(1)

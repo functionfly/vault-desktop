@@ -131,9 +131,9 @@ custom domain (Step 5) and then probes the public path with an anonymous
 GET (Step 7). Two things to know:
 
 - **The domain must be attached in the same Cloudflare account as the DNS
-  zone.** The bucket is in account `<R2 account id — see the private runbook>`,
-  which owns `functionfly.com`. Attaching from any other account is
-  refused by Cloudflare.
+  zone.** The bucket lives in the Cloudflare account that owns
+  `functionfly.com` — the account id is in `docs/INTERNAL.md`. Attaching
+  from any other account is refused by Cloudflare.
 - **Attaching it needs a Cloudflare API token with R2 write scope**
   (`CLOUDFLARE_API_TOKEN` + `CF_ZONE_ID`), separate from the object-level
   R2 credentials. Without them the script skips the step with a loud
