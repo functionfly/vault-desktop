@@ -1,8 +1,9 @@
 # Mock R2 round-trip — 2026-10-06
 
 > **Redacted for publication.** The real account ID, bucket name, and key
-> fingerprints live in [`docs/INTERNAL.md`](../../docs/INTERNAL.md). The mock
-> credentials below are deliberately fake and were never valid.
+> fingerprints live in the maintainers' private runbook, which is not part
+> of this repository. The mock credentials below are deliberately fake and
+> were never valid.
 
 This is the end-to-end evidence that the three operator follow-up
 scripts work end-to-end against an S3-compatible endpoint. The

@@ -1,0 +1,23 @@
+# Git author/committer map for the public repository.
+#
+# The commit metadata in this repository's history was written with
+# personal email addresses. Publishing the repository would publish that
+# metadata, and GitHub permanently links every commit to its author
+# address. A history rewrite replaces it.
+#
+# Format: <original> <replacement>
+#
+# The replacement address is the project's public one. `dev@functionfly.com`
+# is a role address, not a person's inbox.
+#
+# `MicroHD <<personal address — see .mailmap>>` and
+# `functionflycom <<personal address — see .mailmap>>` are personal Gmail
+# addresses; `MicroHD <<personal address — see .mailmap>>` is a personal address at
+# another organisation. All three are mapped to the role address.
+#
+# Applied by:
+#   git filter-repo --mailmap .mailmap
+
+MicroHD <<personal address — see .mailmap>> FunctionFly Dev <dev@functionfly.com>
+MicroHD <<personal address — see .mailmap>>        FunctionFly Dev <dev@functionfly.com>
+functionflycom <<personal address — see .mailmap>> FunctionFly Dev <dev@functionfly.com>

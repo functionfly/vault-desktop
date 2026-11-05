@@ -1,17 +1,52 @@
 #!/usr/bin/env bash
 # Fails if internal-only material has leaked into publishable files.
 #
-# `docs/INTERNAL.md` is intentionally the ONE place that carries bucket
-# identifiers, key paths, key fingerprints, and owner handles. Everything
-# else is written to survive publication, because the repo may be flipped
-# public without warning.
+# ── Why this script exists ────────────────────────────────────────────────
 #
-# This runs in CI so a leak is caught at the moment it is introduced rather
-# than the moment somebody pastes a README into an issue.
+# The repository is going PUBLIC. When that happens GitHub publishes every
+# commit on every branch, every pull-request ref, and every tag — not just
+# the current tree. So a credential that was committed and later removed
+# is still public. The audit that matters is over the whole object graph,
+# not the working tree.
 #
-# Not a secret scanner: it does not try to find high-entropy strings. It
-# pins the exact identifiers we know are sensitive, which is the failure
-# mode that actually happened here.
+# This script is the gate that keeps a leak from being introduced. It runs
+# in CI, so a leak is caught when it is introduced rather than the day
+# somebody pastes a README into an issue.
+#
+# ── Two layers, deliberately ──────────────────────────────────────────────
+#
+# LAYER 1 — GENERIC PATTERNS. These live in this file. They are *shapes*,
+# not values: "a private key block", "an AWS access key id". No specific
+# identifier of ours appears here, so this file is safe to publish.
+#
+# LAYER 2 — SPECIFIC IDENTIFIERS. These are the exact strings that are
+# sensitive for THIS project: the R2 account id, the R2 access key id,
+# the updater key fingerprint, the operator's home path, the owner
+# handles.
+#
+#   *** They are NOT stored in this repository. ***
+#
+# An earlier version of this script hardcoded them. That was a mistake:
+# the guard was publishing the very values it was protecting, because the
+# file containing the blocklist shipped with the thing it was guarding.
+#
+# They now live in a git-ignored file (default:
+# `.internal-identifiers.local` in the repo root), which the operator keeps
+# on the build host and CI injects from a secret. The exact path can be
+# overridden with `VAULT_INTERNAL_IDENTIFIERS_FILE`.
+#
+# If that file is absent, LAYER 2 is skipped and the script says so
+# loudly — it does NOT silently pass. A guard that quietly stops
+# guarding is worse than no guard, because it looks green.
+#
+# ── What is NOT a secret here ────────────────────────────────────────────
+#
+# The updater's Ed25519 PUBLIC key is committed to
+# `src-tauri/tauri.conf.json` (`plugins.updater.pubkey`). That is not a
+# leak: the key has to be compiled into the binary, otherwise an
+# installed client has no way to verify an update signature and
+# auto-update is permanently broken for end users. A public verification
+# key is not secret material; the PRIVATE key is, and LAYER 1 catches it.
 #
 # NOTE: this file must stay executable (`100755` in the git index). CI
 # runs it directly as `./scripts/check-no-internal-leaks.sh`; a `100644`
@@ -19,43 +54,35 @@
 # before the script ever runs. `git update-index --chmod=+x
 # scripts/check-no-internal-leaks.sh` restores it.
 
-set -euo pipefail
+set -uo pipefail
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$REPO_ROOT"
 
-# Files allowed to carry these markers.
-#
-# `docs/INTERNAL.md` is the documented home for the identifiers.
-#
-# THIS SCRIPT is also allowed, and has to be: it is a blocklist, so it
-# necessarily contains the values it looks for. It is a list of
-# identifiers, not credentials — the R2 secret access key is not in the
-# repository — but it is still why `docs/INTERNAL.md` is the first thing
-# to move when the repository is published.
+fail=0
+
+# Files that are allowed to carry internal-only material.
 #
 # `.github/CODEOWNERS` must name real owners for branch protection to
-# work at all, so it is allowed too.
-ALLOWED=("docs/INTERNAL.md" "scripts/check-no-internal-leaks.sh" ".github/CODEOWNERS")
+# work at all, so it is exempt from the owner-handle check only.
+ALLOWED_ALL=(
+  "docs/INTERNAL.md"
+  ".github/CODEOWNERS"
+)
 
-# Everything else in the repository is scanned.
-#
-# This used to be a hand-maintained list of "publishable" files. That
-# list was incomplete, and an account id sat in
-# `scripts/release/README.md` for a release without the guard noticing:
-# the list is the guard's own weakest point, because a file nobody
-# thought to add to it is silently exempt.
-#
-# So the whole tree is scanned now, minus build output, vendored
-# dependencies and the explicitly allowed files above. There is no list
-# to forget to update.
+# ── Build the scan set ───────────────────────────────────────────────────
+# The WHOLE tree is scanned, minus build output, vendored dependencies
+# and generated schema. There is no hand-maintained "publishable files"
+# list, because that list is the guard's weakest point: a file nobody
+# thought to add to it is silently exempt, which is exactly how a leak
+# survived in this repository before.
 PUBLISHABLE=()
 while IFS= read -r -d '' f; do
   PUBLISHABLE+=("$f")
 done < <(
   find . \
     \( -path ./.git -o -path ./node_modules -o -path ./dist -o -path ./target \) -prune -o \
-    \( -path ./src-tauri/target -o -path ./src-tauri/gen -o -path ./.release-please-manifest.json \) -prune -o \
+    \( -path ./src-tauri/target -o -path ./src-tauri/gen \) -prune -o \
     -type f \
     \( -name '*.rs' -o -name '*.ts' -o -name '*.tsx' -o -name '*.js' -o -name '*.mjs' \
        -o -name '*.sh' -o -name '*.py' -o -name '*.md' -o -name '*.toml' -o -name '*.json' \
@@ -64,18 +91,19 @@ done < <(
     -print0
 )
 
-# Strip the allowed files out of the scan set.
+# Strip the fully-exempt files out of the scan set.
 scan_set=()
 for f in "${PUBLISHABLE[@]}"; do
   keep=1
-  for a in "${ALLOWED[@]}"; do
+  for a in "${ALLOWED_ALL[@]}"; do
     if [[ "$f" == "./$a" ]]; then keep=0; break; fi
   done
   (( keep )) && scan_set+=("$f")
 done
 
-fail=0
+echo "scanning ${#scan_set[@]} files"
 
+# ── The check itself ─────────────────────────────────────────────────────
 check() {
   local label="$1" pattern="$2"
   shift 2
@@ -90,55 +118,111 @@ check() {
   done
 
   if (( ${#hits[@]} > 0 )); then
-    echo "::error::$label found in publishable file(s): ${hits[*]}" >&2
-    echo "         Move it to docs/INTERNAL.md, or replace it with a placeholder." >&2
+    echo "::error::${label} found in publishable file(s): ${hits[*]}" >&2
+    echo "         Move it out of the repository, or replace it with a placeholder." >&2
     fail=1
   else
-    echo "ok  no $label outside the allowed files"
+    echo "ok  no ${label}"
   fi
 }
 
-# 1. The Cloudflare R2 account id, in the exact form the scripts accept.
-check "R2 account id" '<R2 account id — see the private runbook>' "${scan_set[@]}"
+# ══ LAYER 1 — generic patterns ══════════════════════════════════════════
+# Shapes, not values. Safe to publish.
 
-# 2. The dev-scoped R2 access key id.
-check "R2 access key id" '<R2 access key id — see the private runbook>' "${scan_set[@]}"
+check "private key block" \
+  'BEGIN (OPENSSH |RSA |EC |DSA |ENCRYPTED |PGP )?PRIVATE KEY' "${scan_set[@]}"
 
-# 3. The updater public-key fingerprint.
-check "updater key fingerprint" '<updater key fingerprint — see the private runbook>' "${scan_set[@]}"
+check "AWS access key id" \
+  '(^|[^A-Z0-9])(AKIA|ASIA|AIDA|AROA|ANPA|ABIA)[A-Z0-9]{16}' "${scan_set[@]}"
 
-# 4. The public key material itself (base64 prefix).
-#
-# NOTE: the updater's Ed25519 PUBLIC key is now committed to
-# `src-tauri/tauri.conf.json` (`plugins.updater.pubkey`). That is not a
-# leak and not a regression — the key has to be compiled into the
-# binary, otherwise an installed client has no way to verify an update
-# signature and auto-update is permanently broken. A public verification
-# key is not secret material; the PRIVATE key is, and check 7 covers it.
-#
-# What this check still protects is the *prose*: the key must not be
-# pasted into the README, the CHANGELOG, or the release scripts, where
-# it would be copied into release notes and published to users who have
-# no use for it. The config file is the ONE place it belongs, so it is
-# the ONE file exempt from this check — and scanned for every other
-# marker instead.
-pubkey_scan=()
-for f in "${scan_set[@]}"; do
-  [[ "$f" == "./src-tauri/tauri.conf.json" ]] && continue
-  pubkey_scan+=("$f")
-done
-check "updater pubkey prefix" 'dW50cnVzdGVkIGNvbW1lbnQ6IG1vbmlzaWdu' "${pubkey_scan[@]}"
+check "GitHub token" \
+  'gh[pousr]_[A-Za-z0-9]{30,}|github_pat_[A-Za-z0-9_]{40,}' "${scan_set[@]}"
 
-# 5. The maintainer's home directory, which leaks the build-host username.
-check "operator home path" '<operator home>' "${scan_set[@]}"
+check "Slack token" \
+  'xox[baprs]-[A-Za-z0-9-]{10,}' "${scan_set[@]}"
 
-# 6. Individual owner handles. CODEOWNERS and docs/INTERNAL.md are exempt:
-#    CODEOWNERS must name real owners for branch protection to work at all,
-#    and INTERNAL.md is the documented home for these values.
-check "owner handle" '@functionflycom|@CallReef' "${scan_set[@]}"
+check "Stripe secret key" \
+  '(^|[^a-z])(sk|rk)_live_[A-Za-z0-9]{20,}' "${scan_set[@]}"
 
-# 7. The signing private key must never appear anywhere in the repo.
-check "PRIVATE KEY block" 'BEGIN (OPENSSH |RSA |EC |)PRIVATE KEY' "${scan_set[@]}"
+check "Google API key" \
+  'AIza[0-9A-Za-z_-]{35}' "${scan_set[@]}"
+
+check "SendGrid key" \
+  'SG\.[A-Za-z0-9_-]{20,}\.[A-Za-z0-9_-]{20,}' "${scan_set[@]}"
+
+check "Twilio account SID" \
+  'AC[a-f0-9]{32}' "${scan_set[@]}"
+
+check "npm token" \
+  'npm_[A-Za-z0-9]{36}' "${scan_set[@]}"
+
+check "OpenAI / Anthropic API key" \
+  'sk-ant-[A-Za-z0-9_-]{20,}|sk-[A-Za-z0-9]{32,}' "${scan_set[@]}"
+
+# A real JWT carries a base64url signature of at least 43 characters for
+# HS256. Requiring that length keeps short test fixtures from tripping
+# the check while still catching a genuine token.
+check "JSON Web Token" \
+  'eyJ[A-Za-z0-9_-]{10,}\.eyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{43,}' "${scan_set[@]}"
+
+# NOTE: the pattern is written as two adjacent quoted strings so this
+# file does not contain the literal it searches for. A guard that matches
+# itself fails on every run, which trains people to ignore it.
+check "dotenv private key" \
+  'DOTENV_PRIVATE''_KEY=' "${scan_set[@]}"
+
+check "credential in a URL" \
+  '://[^/\s:@]+:[^/\s:@]+@' "${scan_set[@]}"
+
+# ══ LAYER 2 — this project's specific identifiers ═══════════════════════
+# Read from a git-ignored file. NOT stored in this repository.
+
+IDENTIFIERS_FILE="${VAULT_INTERNAL_IDENTIFIERS_FILE:-$REPO_ROOT/.internal-identifiers.local}"
+
+if [[ -s "$IDENTIFIERS_FILE" ]]; then
+  # Each non-blank, non-comment line is a literal string that must not
+  # appear anywhere in the publishable set. A line may be `label=value`
+  # or just `value`; only the value is searched for.
+  while IFS= read -r line; do
+    # Trim whitespace and skip blanks/comments.
+    line="${line#"${line%%[![:space:]]*}"}"
+    line="${line%"${line##*[![:space:]]}"}"
+    [[ -z "$line" || "$line" == \#* ]] && continue
+
+    if [[ "$line" == *=* ]]; then
+      label="${line%%=*}"
+      value="${line#*=}"
+    else
+      label="identifier"
+      value="$line"
+    fi
+    [[ -z "$value" ]] && continue
+
+    # Search literally, not as a regex: these values contain characters
+    # that mean something to grep -E.
+    hits=()
+    for f in "${scan_set[@]}"; do
+      [[ -e "$f" ]] || continue
+      if grep -rIlF -- "$value" "$f" >/dev/null 2>&1; then
+        hits+=("$f")
+      fi
+    done
+
+    if (( ${#hits[@]} > 0 )); then
+      echo "::error::${label} found in publishable file(s): ${hits[*]}" >&2
+      echo "         Move it out of the repository, or replace it with a placeholder." >&2
+      fail=1
+    else
+      echo "ok  no ${label}"
+    fi
+  done < "$IDENTIFIERS_FILE"
+else
+  echo "::warning::no internal-identifier list at ${IDENTIFIERS_FILE}" >&2
+  echo "         Layer 2 (this project's specific identifiers) was SKIPPED." >&2
+  echo "         Set VAULT_INTERNAL_IDENTIFIERS_FILE, or create that file," >&2
+  echo "         to enable it. CI injects it from a secret." >&2
+  echo "         Layer 1 (generic secret shapes) still ran." >&2
+fi
 
 if (( fail != 0 )); then
   echo >&2
@@ -147,5 +231,4 @@ if (( fail != 0 )); then
 fi
 
 echo
-echo "No internal-only material outside the allowed files."
-echo "(${ALLOWED[*]} are the documented homes for these values.)"
+echo "No internal-only material in the publishable tree."

@@ -9,12 +9,13 @@ decrypted from `.env` via dotenvx.
 ## Environment
 
 > **Redacted for publication.** Real account IDs, key IDs, key paths, and
-> fingerprints live in [`docs/INTERNAL.md`](../../docs/INTERNAL.md). The values
-> below are shape-accurate placeholders so this transcript still documents *what*
-> was run without handing out live infrastructure identifiers.
+> fingerprints live in the maintainers' private runbook, which is not part of
+> this repository. The values below are shape-accurate placeholders so this
+> transcript still documents *what* was run without handing out live
+> infrastructure identifiers.
 
 ```
-R2_ACCOUNT_ID      = <32 hex, see docs/INTERNAL.md>
+R2_ACCOUNT_ID      = <32 hex, see the private runbook>
 R2_ACCESS_KEY_ID   = <32 chars, dev-scoped to one bucket>
 R2_SECRET_ACCESS_KEY = <64 chars>
 R2_ENDPOINT        = https://<account-id>.r2.cloudflarestorage.com

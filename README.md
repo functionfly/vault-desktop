@@ -130,8 +130,9 @@ Nothing is tagged by hand — merge the release PR and release-please tags it.
   see the manual procedure in [`docs/BRANCHING.md`](docs/BRANCHING.md).
 
 > Deployment specifics (bucket identifiers, key paths, owner handles, and the
-> org's CI policy constraints) are deliberately kept out of this document in
-> [`docs/INTERNAL.md`](docs/INTERNAL.md), which is not published.
+> org's CI policy constraints) are deliberately kept out of this document.
+> They live in the maintainers' private runbook, which is not part of this
+> repository.
 
 ### Local checks that mirror CI
 

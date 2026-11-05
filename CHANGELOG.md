@@ -44,7 +44,7 @@ the full STRIDE review of the IPC surface.
   reports its failures on stdout as well as stderr. It was verified to
   both catch a planted leak and pass clean.
 - **The build host's home directory was in the source tree.** The
-  artefact-contract test hardcoded `<operator key dir>/…`. It now reads
+  artefact-contract test hardcoded the operator's key path. It now reads
   the path from `VAULT_SIGNING_PUBKEY`.
 - `src-tauri/tests/security_contract.rs` pins the whole posture: the
   export/import commands take no path, the capability manifest grants no
