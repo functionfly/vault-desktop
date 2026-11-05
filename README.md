@@ -4,10 +4,19 @@ Cross-platform desktop client for the FunctionFly zero-knowledge secrets API.
 Built on Tauri v2 (Rust core + React webview) and packed into a single binary
 for Windows, macOS, and Linux.
 
-> **Status: 2026-11-04 — v1.0.0.**
-> Rust core: `cargo clippy --all-targets -- -D warnings` clean; **125 Rust tests** passing (80 unit + 19 orchestrator-mock + 10 device-flow + 6 security-contract + 4 updater-artefact-contract + 4 updater-config + 2 OS-keychain). React bundle: `tsc` + `vite build` clean, **103 vitest** passing.
+> **Status: 2026-11-05 — v1.0.1 is released.**
+> The installers are published at
+> [the v1.0.1 release](https://github.com/functionfly/vault-desktop/releases/tag/v1.0.1)
+> (Windows `.exe` + `.msi`, Linux AppImage + `.deb`), each with the Ed25519
+> signature the updater verifies, and the `stable` updater channel serves six
+> signed platform keys from
+> [`updates.functionfly.com`](https://updates.functionfly.com/vault/stable/manifest.json).
+> The Ed25519 signature protects the update channel; it is **not** a platform
+> vendor signature — see [Known limitations](#known-limitations).
+>
+> Rust core: `cargo clippy --all-targets -- -D warnings` clean; **129 Rust tests** passing (81 unit + 19 orchestrator-mock + 10 device-flow + 6 security-contract + 3 published-artefact-contract + 4 updater-artefact-contract + 4 updater-config + 2 OS-keychain). React bundle: `tsc` + `vite build` clean, **105 vitest** passing.
 > Signed auto-update is wired with the Ed25519 public key compiled into the binary, so an installed client can verify updates without any environment variable. The webview runs under a strict Content Security Policy, and the IPC surface has been through a STRIDE review — see [`docs/SECURITY-REVIEW.md`](docs/SECURITY-REVIEW.md).
-> The OS keychain round-trip, the release-manifest contract and the leak guard are all automated and run in the portable CI runner. Code-signing configuration is in place but the certificates are not provisioned, so the installers are not yet signed by a platform vendor.
+> The OS keychain round-trip, the release-manifest contract and the leak guard are all automated and run in the portable CI runner. Code-signing configuration is in place but the certificates are not provisioned, so the installers are not yet signed by a platform vendor — macOS has no installer at all yet (see [Known limitations](#known-limitations)).
 
 ## Screens
 
@@ -232,7 +241,33 @@ scripts/ci.sh
 probe the runner executes and fails if one is missing, so the runner cannot
 quietly fall behind the workflow.
 
-The release pipeline does not need Actions either. `release-please` is a
+### The macOS compile gate
+
+[`scripts/macos-typecheck.sh`](scripts/macos-typecheck.sh) type-checks the
+macOS build **on a Linux host**. It is a compile gate, not a build: it
+produces no `.app` and no `.dmg`, because that needs the Apple SDK, the
+Tauri macOS bundler and an Apple Developer ID certificate — none of which
+exist on Linux.
+
+It exists because the release workflow's `macos-latest` job cannot start
+while the organisation's GitHub billing is unsettled. Without it, a
+macOS-only compile error would go unnoticed until a macOS runner finally
+exists.
+
+```bash
+./scripts/macos-typecheck.sh            # check
+./scripts/macos-typecheck.sh --clean    # from a cold target directory
+```
+
+It needs [zig](https://ziglang.org/download/) (which bundles the macOS
+libc headers and emits Mach-O objects), LLVM 17+ (for
+`llvm-install-name-tool`, which CMake demands for a Darwin build) and
+`cmake`. The script skips itself with an explicit notice when zig is
+absent, so a host without it still runs every other gate.
+
+### The release pipeline does not need Actions either
+
+`release-please` is a
 CLI (`npx release-please release-pr`), not an Action, and the signed
 builds are `tauri build` — so a release can be cut from any machine that
 holds the signing key:
@@ -622,6 +657,14 @@ The script is deterministic; rerun it whenever the brand mark changes
   provisioned; the certificates themselves need a paid Apple Developer
   Program membership and a Windows code-signing certificate.
   `scripts/release/check-signing-readiness.sh` reports the gap.
+- **There is no macOS installer.** The release workflow already declares
+  a `macos-latest` job (`release.yml`), so the pipeline is correct — but
+  that job cannot start while the organisation's GitHub billing is
+  settled. Until it runs, the `stable` channel simply has no `darwin`
+  keys and a macOS client is told there is no update available. The
+  macOS-specific code is three `#[cfg(target_os = "macos")]` blocks
+  that resolve the data directory, and it is type-checked on Linux in
+  CI, so the macOS build is not expected to surprise us.
 - **The updater signature is not the same thing as a platform signature.**
   The Ed25519 updater signature protects the *update channel* â€” it is
   what stops an attacker from serving a modified binary to an installed
