@@ -49,8 +49,18 @@ RUN curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs \
  && chmod -R a+w $RUSTUP_HOME $CARGO_HOME
 
 # bun (the package manager the repo uses).
+#
+# BUN_INSTALL must be set explicitly. The official installer ignores
+# PATH and installs to "$HOME/.bun" unless BUN_INSTALL says otherwise,
+# so without it the binary lands in /root/.bun and the `chmod -R a+w
+# /usr/local/bun` below fails with "No such file or directory" — which
+# is how this layer broke.
+ENV BUN_INSTALL=/usr/local/bun
 RUN curl -fsSL https://bun.sh/install | bash \
- && chmod -R a+w /usr/local/bun
+ && chmod -R a+w /usr/local/bun \
+ && ln -sf /usr/local/bun/bin/bun /usr/local/bin/bun \
+ && ln -sf /usr/local/bun/bin/bun /usr/local/bin/bunx \
+ && bun --version
 
 WORKDIR /src
 
