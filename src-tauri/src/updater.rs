@@ -13,7 +13,7 @@
 //!   rebuilding.
 //! - `VAULT_UPDATER_{STABLE,BETA}_URL` — optional per-channel endpoint.
 //!   When unset, defaults to
-//!   `https://updates.functionfly.app/vault/{channel}/manifest.json`
+//!   `https://updates.functionfly.com/vault/{channel}/manifest.json`
 //!   so a vanilla vault binary still works out of the box once the R2
 //!   bucket `functionfly-vault-updates` is provisioned.
 //!
@@ -158,7 +158,7 @@ impl UpdaterConfig {
             let env_name = format!("VAULT_UPDATER_{}_URL", channel.env_suffix());
             let url = std::env::var(&env_name).unwrap_or_else(|_| {
                 format!(
-                    "https://updates.functionfly.app/vault/{}/manifest.json",
+                    "https://updates.functionfly.com/vault/{}/manifest.json",
                     channel
                 )
             });
@@ -320,7 +320,7 @@ mod tests {
         let cfg = UpdaterConfig::from_env(None).unwrap();
         for ch in UpdaterChannel::ALL {
             let url = cfg.channel_url(ch).unwrap();
-            assert!(url.starts_with("https://updates.functionfly.app/vault/"));
+            assert!(url.starts_with("https://updates.functionfly.com/vault/"));
             assert!(url.contains(ch.as_str()));
             assert!(url.ends_with("/manifest.json"));
             // `tauri-plugin-updater` substitutes only these four tokens.
@@ -359,7 +359,7 @@ mod tests {
         assert!(cfg
             .channel_url(UpdaterChannel::Stable)
             .unwrap()
-            .contains("updates.functionfly.app/vault/stable"));
+            .contains("updates.functionfly.com/vault/stable"));
     }
 
     #[test]

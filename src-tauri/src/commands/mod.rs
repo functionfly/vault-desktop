@@ -6,6 +6,8 @@
 //! sees a bearer token, a CSRF token, or plaintext secrets — the
 //! "unlock" → "list" → "decrypt" flow stays inside the Rust core.
 
+pub mod idle;
+pub mod platform;
 pub mod updater;
 
 use std::sync::Arc;
@@ -24,6 +26,8 @@ use crate::store::{BackendKind, SecretStore, StoreError, StoredSession};
 pub struct AppState {
     pub client: Arc<VaultClient>,
     pub store: Arc<SecretStore>,
+    /// Tracks user activity so the vault can auto-lock when idle.
+    pub idle: idle::SharedIdleTracker,
 }
 
 impl Default for AppState {
@@ -54,6 +58,7 @@ impl AppState {
         Self {
             client,
             store: Arc::new(SecretStore::new()),
+            idle: Arc::new(idle::IdleTracker::default()),
         }
     }
 }
@@ -511,9 +516,6 @@ pub async fn list_secrets(
     require_auth(&state).await?;
 
     let mut q = Vec::new();
-    if let Some(s) = &query.search {
-        q.push(("search", s.clone()));
-    }
     if let Some(ns) = &query.namespace {
         q.push(("namespace", ns.clone()));
     }
@@ -528,14 +530,299 @@ pub async fn list_secrets(
         .request(reqwest::Method::GET, "/v1/vault/secrets", &q, None)
         .await?;
 
-    Ok(ListSecretsResult {
-        secrets: resp
+    let secrets = resp
+        .get("secrets")
+        .and_then(|s| s.as_array())
+        .cloned()
+        .unwrap_or_default();
+    let total = resp.get("total").and_then(|t| t.as_i64()).unwrap_or(0);
+
+    // Refresh the offline metadata cache with what the server just told
+    // us. This is the only writer.
+    //
+    // A failure to write the cache must NOT fail the list: the data is
+    // already in hand, and a read-only data dir should not stop the user
+    // seeing their secrets.
+    write_metadata_cache(&state, &secrets).await;
+
+    // The orchestrator's list endpoint does NOT honour a `search`
+    // parameter — it parses `limit`, `offset`, `secret_type`, `namespace`
+    // and `name`, and ignores everything else. So the search box in the
+    // secrets screen used to send `search=...` and get back the entire
+    // tenant's secrets every time, whatever the user typed.
+    //
+    // The filter is therefore applied HERE, client-side — and, because the
+    // server's own pagination is capped at 100 per page, the whole vault
+    // is paged through so a match beyond the first page is still found.
+    let term = query
+        .search
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty());
+    match term {
+        None => Ok(ListSecretsResult { secrets, total }),
+        Some(term) => {
+            let needle = term.to_lowercase();
+            // Read the page size BEFORE consuming the vector.
+            let page_was_full = secrets.len() >= query.limit as usize;
+            let mut matched: Vec<serde_json::Value> = secrets
+                .into_iter()
+                .filter(|s| secret_matches(s, &needle))
+                .collect();
+
+            // Only page further when this page was full — a short page
+            // means the server has nothing more to give.
+            if page_was_full && total > matched.len() as i64 {
+                let all = collect_all_secrets(&state, &query).await?;
+                matched = all
+                    .into_iter()
+                    .filter(|s| secret_matches(s, &needle))
+                    .collect();
+            }
+
+            Ok(ListSecretsResult {
+                total: matched.len() as i64,
+                secrets: matched,
+            })
+        }
+    }
+}
+
+/// Pages through the whole tenant's secrets.
+///
+/// The server caps `limit` at 100 per request, so a vault larger than
+/// that needs several requests to see all of it.
+async fn collect_all_secrets(
+    state: &State<'_, AppState>,
+    query: &ListQuery,
+) -> Result<Vec<serde_json::Value>, AppError> {
+    const PAGE: u32 = 100;
+    let mut all: Vec<serde_json::Value> = Vec::new();
+    let mut offset = 0u32;
+
+    loop {
+        let mut q = Vec::new();
+        if let Some(ns) = &query.namespace {
+            q.push(("namespace", ns.clone()));
+        }
+        if let Some(st) = &query.secret_type {
+            q.push(("secret_type", st.clone()));
+        }
+        q.push(("limit", PAGE.to_string()));
+        q.push(("offset", offset.to_string()));
+
+        let resp: serde_json::Value = state
+            .client
+            .request(reqwest::Method::GET, "/v1/vault/secrets", &q, None)
+            .await?;
+        let batch = resp
             .get("secrets")
             .and_then(|s| s.as_array())
             .cloned()
-            .unwrap_or_default(),
-        total: resp.get("total").and_then(|t| t.as_i64()).unwrap_or(0),
-    })
+            .unwrap_or_default();
+        let count = batch.len() as u32;
+        all.extend(batch);
+        offset += PAGE;
+
+        if count < PAGE {
+            break;
+        }
+        // Hard stop, so a server that ignores `offset` cannot spin forever.
+        if offset > 100_000 {
+            break;
+        }
+    }
+
+    Ok(all)
+}
+
+/// Whether a secret's metadata contains `needle` (already lowercased).
+///
+/// Matches the name, the description, the namespace and the scopes —
+/// the fields a user would expect a secret search to reach. The
+/// ciphertext and the plaintext are never searched: the ciphertext is
+/// opaque and the plaintext is not in the list response.
+fn secret_matches(secret: &serde_json::Value, needle: &str) -> bool {
+    const FIELDS: [&str; 4] = ["name", "description", "namespace", "secret_type"];
+
+    for field in FIELDS {
+        if let Some(value) = secret.get(field).and_then(|v| v.as_str()) {
+            if value.to_lowercase().contains(needle) {
+                return true;
+            }
+        }
+    }
+
+    // Scopes are an array of strings.
+    if let Some(scopes) = secret.get("scopes").and_then(|v| v.as_array()) {
+        for scope in scopes.iter().filter_map(|s| s.as_str()) {
+            if scope.to_lowercase().contains(needle) {
+                return true;
+            }
+        }
+    }
+
+    false
+}
+
+/// Writes the offline metadata cache.
+///
+/// Best-effort by design: a failure here is logged, never surfaced as an
+/// error. The caller already has the data it asked for, and a
+/// read-only data directory should not stop the user from seeing their
+/// secrets.
+async fn write_metadata_cache(state: &State<'_, AppState>, secrets: &[serde_json::Value]) {
+    let cache = match crate::cache::MetadataCache::new() {
+        Ok(c) => c,
+        Err(e) => {
+            tracing::warn!("metadata cache unavailable: {e}");
+            return;
+        }
+    };
+
+    let cached: Vec<crate::cache::CachedSecret> = secrets
+        .iter()
+        .filter_map(|s| {
+            let id = s.get("id").and_then(|v| v.as_str())?;
+            Some(crate::cache::CachedSecret {
+                id: id.to_string(),
+                name: s
+                    .get("name")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or_default()
+                    .to_string(),
+                description: s
+                    .get("description")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or_default()
+                    .to_string(),
+                secret_type: s
+                    .get("secret_type")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or_default()
+                    .to_string(),
+                namespace: s
+                    .get("namespace")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("default")
+                    .to_string(),
+                scopes: s
+                    .get("scopes")
+                    .and_then(|v| v.as_array())
+                    .map(|a| {
+                        a.iter()
+                            .filter_map(|v| v.as_str())
+                            .map(str::to_string)
+                            .collect()
+                    })
+                    .unwrap_or_default(),
+                // The server omits `zk_mode` on a list response only if it
+                // is older than the field; default to zero-knowledge,
+                // which is the safe assumption.
+                zk_mode: s.get("zk_mode").and_then(|v| v.as_bool()).unwrap_or(true),
+                access_count: s.get("access_count").and_then(|v| v.as_i64()).unwrap_or(0),
+                created_at: s
+                    .get("created_at")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or_default()
+                    .to_string(),
+                updated_at: s
+                    .get("updated_at")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or_default()
+                    .to_string(),
+            })
+        })
+        .collect();
+
+    let user = state.client.current_user().await;
+    let file = crate::cache::CacheFile {
+        format_version: 1,
+        cached_at: crate::commands::platform::rfc3339_now(),
+        base_url: state.client.base_url().await,
+        tenant_id: user.map(|u| u.tenant_id).unwrap_or_default(),
+        secrets: cached,
+    };
+
+    if let Err(e) = cache.write(&file) {
+        tracing::warn!("writing the metadata cache failed: {e}");
+    }
+}
+
+/// Reads the offline metadata cache.
+///
+/// Used when the orchestrator is unreachable. Returns `None` when there is
+/// no cache yet.
+#[tauri::command]
+pub async fn read_metadata_cache(
+    state: State<'_, AppState>,
+) -> Result<serde_json::Value, AppError> {
+    let cache = crate::cache::MetadataCache::new().map_err(|e| {
+        AppError::new(
+            AppErrorKind::Storage,
+            format!("metadata cache unavailable: {e}"),
+        )
+    })?;
+    let file = cache.read().map_err(|e| {
+        AppError::new(
+            AppErrorKind::Storage,
+            format!("reading the metadata cache: {e}"),
+        )
+    })?;
+
+    let Some(file) = file else {
+        return Ok(serde_json::json!({ "available": false }));
+    };
+
+    // A cache from a DIFFERENT orchestrator or tenant must never be shown
+    // against this session: the names would be misleading.
+    let current_base = state.client.base_url().await;
+    let current_tenant = state
+        .client
+        .current_user()
+        .await
+        .map(|u| u.tenant_id)
+        .unwrap_or_default();
+    if !current_base.is_empty() && file.base_url != current_base {
+        return Ok(serde_json::json!({
+            "available": false,
+            "reason": "the cached metadata belongs to a different orchestrator",
+        }));
+    }
+    if !current_tenant.is_empty() && !file.tenant_id.is_empty() && file.tenant_id != current_tenant
+    {
+        return Ok(serde_json::json!({
+            "available": false,
+            "reason": "the cached metadata belongs to a different tenant",
+        }));
+    }
+
+    Ok(serde_json::json!({
+        "available": true,
+        "cached_at": file.cached_at,
+        "base_url": file.base_url,
+        "tenant_id": file.tenant_id,
+        "count": file.secrets.len(),
+        "secrets": file.secrets,
+    }))
+}
+
+/// Clears the offline metadata cache.
+#[tauri::command]
+pub async fn clear_metadata_cache(_state: State<'_, AppState>) -> Result<(), AppError> {
+    let cache = crate::cache::MetadataCache::new().map_err(|e| {
+        AppError::new(
+            AppErrorKind::Storage,
+            format!("metadata cache unavailable: {e}"),
+        )
+    })?;
+    cache.clear().map_err(|e| {
+        AppError::new(
+            AppErrorKind::Storage,
+            format!("clearing the metadata cache: {e}"),
+        )
+    })?;
+    Ok(())
 }
 
 #[derive(Serialize)]
@@ -681,6 +968,17 @@ pub struct CreateSecretInput {
     pub namespace: String,
     #[serde(default)]
     pub scopes: Vec<String>,
+    /// Ask the PLATFORM to hold this secret: it encrypts the value with the
+    /// tenant's data-encryption key instead of taking a client-side
+    /// envelope.
+    ///
+    /// This deliberately WIDENS the trust boundary — the platform can now
+    /// read the secret — so it is opt-in and the server gates it on the
+    /// ADMIN tenant role. It is also the ONLY kind of secret a capability
+    /// "use" grant can serve: a zero-knowledge secret can never back one,
+    /// because the broker has nothing to deliver.
+    #[serde(default)]
+    pub server_side: bool,
 }
 
 #[tauri::command]
@@ -709,15 +1007,35 @@ pub async fn create_secret(
         ));
     }
 
-    let encrypted = encrypt_field(&state, &input.plaintext).await?;
-    let body = serde_json::json!({
-        "name": name,
-        "description": input.description,
-        "secret_type": input.secret_type,
-        "encrypted_data": encrypted,
-        "namespace": input.namespace,
-        "scopes": input.scopes,
-    });
+    let body = if input.server_side {
+        // Platform-held secret. The PLATFORM encrypts with the tenant's
+        // data-encryption key, so there is no client-side envelope to send
+        // and the plaintext travels once, over the authenticated channel.
+        //
+        // The server rejects this unless the caller holds the ADMIN tenant
+        // role, and it never returns the value or a ciphertext that would
+        // be of any use to us.
+        serde_json::json!({
+            "name": name,
+            "description": input.description,
+            "secret_type": input.secret_type,
+            "server_side": true,
+            "value": input.plaintext,
+            "namespace": input.namespace,
+            "scopes": input.scopes,
+        })
+    } else {
+        // Zero-knowledge secret: encrypt in-core, send only the envelope.
+        let encrypted = encrypt_field(&state, &input.plaintext).await?;
+        serde_json::json!({
+            "name": name,
+            "description": input.description,
+            "secret_type": input.secret_type,
+            "encrypted_data": encrypted,
+            "namespace": input.namespace,
+            "scopes": input.scopes,
+        })
+    };
     state
         .client
         .request(reqwest::Method::POST, "/v1/vault/secrets", &[], Some(body))
@@ -1068,7 +1386,7 @@ pub async fn list_audit_by_actor(
 
 // ── internals ─────────────────────────────────────────────────────────────
 
-async fn require_auth(state: &State<'_, AppState>) -> Result<(), AppError> {
+pub(crate) async fn require_auth(state: &State<'_, AppState>) -> Result<(), AppError> {
     if !state.client.is_authenticated().await {
         return Err(AppError::new(AppErrorKind::Unauthenticated, "log in first"));
     }
@@ -1089,6 +1407,24 @@ async fn decrypt_field(
     state: &State<'_, AppState>,
     raw: &serde_json::Value,
 ) -> Result<String, AppError> {
+    // A platform-held secret (`zk_mode: false`) is encrypted by the
+    // PLATFORM with the tenant's data-encryption key. There is no
+    // client-side envelope to open, and the unlock passphrase cannot
+    // derive the right key — so attempting the decrypt anyway reports a
+    // misleading "wrong passphrase or corrupted payload". Refuse
+    // explicitly instead.
+    //
+    // This check MUST come before the `encrypted_data` lookup: for a
+    // platform-held secret the server returns an EMPTY envelope, which
+    // would otherwise surface as a confusing deserialization failure.
+    if raw.get("zk_mode").and_then(|v| v.as_bool()) == Some(false) {
+        return Err(AppError::new(
+            AppErrorKind::PlatformHeld,
+            "this secret is held by the platform (zero-knowledge is off for it), \
+             so the desktop client cannot decrypt it",
+        ));
+    }
+
     // Run PBKDF2-derived decryption on the blocking pool so the UI thread
     // does not freeze for 600k iterations × every reveal.
     let store = state.store.clone();
@@ -1255,5 +1591,64 @@ mod tests {
             .unwrap()
             .remove("NOT-A-REAL-CODE")
             .is_none());
+    }
+
+    // ── secret search ───────────────────────────────────────────────────
+    //
+    // The orchestrator's list endpoint does not honour a `search`
+    // parameter, so the filter runs here. These tests pin the matching
+    // rules.
+
+    fn secret_json(name: &str, namespace: &str, scopes: &[&str]) -> serde_json::Value {
+        serde_json::json!({
+            "id": "s1",
+            "name": name,
+            "description": "a test secret",
+            "namespace": namespace,
+            "secret_type": "api_key",
+            "scopes": scopes,
+        })
+    }
+
+    #[test]
+    fn search_matches_the_name_case_insensitively() {
+        let s = secret_json("Stripe Live Key", "default", &[]);
+        assert!(secret_matches(&s, "stripe"));
+        assert!(secret_matches(&s, "live"));
+        assert!(!secret_matches(&s, "aws"));
+    }
+
+    #[test]
+    fn search_matches_the_namespace_and_the_scopes() {
+        let s = secret_json("key", "ci-deployers", &["inject", "read"]);
+        assert!(secret_matches(&s, "ci-deploy"));
+        assert!(secret_matches(&s, "inject"));
+        assert!(!secret_matches(&s, "production"));
+    }
+
+    #[test]
+    fn search_matches_the_description() {
+        let s = secret_json("key", "default", &[]);
+        assert!(secret_matches(&s, "test secret"));
+    }
+
+    #[test]
+    fn search_does_not_match_a_missing_field() {
+        let s = serde_json::json!({ "id": "s1", "name": "key" });
+        // No namespace, no scopes, no description — none of these should
+        // panic, and none should match.
+        assert!(!secret_matches(&s, "namespace"));
+        assert!(!secret_matches(&s, "inject"));
+    }
+
+    #[test]
+    fn search_ignores_the_ciphertext() {
+        let s = serde_json::json!({
+            "id": "s1",
+            "name": "key",
+            "encrypted_data": { "ciphertext": "c2VjcmV0" },
+        });
+        // The ciphertext is base64 and must never be searchable.
+        assert!(!secret_matches(&s, "c2VjcmV0"));
     }
 }

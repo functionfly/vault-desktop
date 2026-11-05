@@ -82,35 +82,59 @@ print("configured pubkey keynum:", body[2:10].hex().upper())
 PY
 
 # ── Cross-check against the signing key when it is available ──────────────
-# The private key can arrive two ways:
-#   * `VAULT_SIGNING_PRIVATE_KEY_PATH` — a path to the key file (the
-#     operator-host workflow).
-#   * `VAULT_SIGNING_PRIVATE_KEY` — the key material itself, which is how
-#     a GitHub Actions secret is delivered.
-# Both are normalised to a file on disk, because `cargo-tauri signer sign`
-# takes a path.
+# The private key can arrive under several names depending on how the
+# build was invoked:
+#   * `VAULT_SIGNING_PRIVATE_KEY_PATH` / `VAULT_SIGNING_PRIVATE_KEY` —
+#     the names this script's own docs use, and the ones the release
+#     workflow sets.
+#   * `TAURI_SIGNING_PRIVATE_KEY_PATH` / `TAURI_SIGNING_PRIVATE_KEY` —
+#     the names the Tauri CLI itself reads, and the ones
+#     `load-updater-env.sh` exports.
+#
+# All four are accepted so that sourcing the env loader and then running
+# this script finds the key. Both are normalised to a file on disk,
+# because `cargo-tauri signer sign` takes a path.
 TMP="$(mktemp -d)"
 trap 'rm -rf "$TMP"' EXIT
 
-KEY_PATH="${VAULT_SIGNING_PRIVATE_KEY_PATH:-}"
-if [ -z "$KEY_PATH" ] || [ ! -f "$KEY_PATH" ]; then
-  if [ -n "${VAULT_SIGNING_PRIVATE_KEY:-}" ]; then
-    KEY_PATH="$TMP/private-key.json"
-    # A trailing newline is not part of the key and breaks base64
-    # decoding, so strip it.
-    printf '%s' "$VAULT_SIGNING_PRIVATE_KEY" > "$KEY_PATH"
-    chmod 600 "$KEY_PATH"
-  else
-    echo "::notice::no signing key was provided; the keypair match was NOT verified."
-    echo "         Only the presence and well-formedness of the configured pubkey were checked."
-    exit 0
+KEY_PATH=""
+for candidate in \
+  "${VAULT_SIGNING_PRIVATE_KEY_PATH:-}" \
+  "${TAURI_SIGNING_PRIVATE_KEY_PATH:-}"
+do
+  if [ -n "$candidate" ] && [ -f "$candidate" ]; then
+    KEY_PATH="$candidate"
+    break
   fi
+done
+
+if [ -z "$KEY_PATH" ]; then
+  for material in \
+    "${VAULT_SIGNING_PRIVATE_KEY:-}" \
+    "${TAURI_SIGNING_PRIVATE_KEY:-}"
+  do
+    if [ -n "$material" ]; then
+      KEY_PATH="$TMP/private-key.json"
+      # A trailing newline is not part of the key and breaks base64
+      # decoding, so strip it.
+      printf '%s' "$material" > "$KEY_PATH"
+      chmod 600 "$KEY_PATH"
+      break
+    fi
+  done
 fi
 
-if [ -z "${VAULT_SIGNING_PRIVATE_KEY_PASSWORD:-}" ]; then
-  echo "::notice::VAULT_SIGNING_PRIVATE_KEY_PASSWORD is not set; the keypair match was NOT verified."
+if [ -z "$KEY_PATH" ]; then
+  echo "::notice::no signing key was provided; the keypair match was NOT verified."
+  echo "         Only the presence and well-formedness of the configured pubkey were checked."
   exit 0
 fi
+
+if [ -z "${VAULT_SIGNING_PRIVATE_KEY_PASSWORD:-}" ] && [ -z "${TAURI_SIGNING_PRIVATE_KEY_PASSWORD:-}" ]; then
+  echo "::notice::the signing key password is not set; the keypair match was NOT verified."
+  exit 0
+fi
+SIGNING_PASSWORD="${VAULT_SIGNING_PRIVATE_KEY_PASSWORD:-${TAURI_SIGNING_PRIVATE_KEY_PASSWORD:-}}"
 
 command -v cargo-tauri >/dev/null 2>&1 || {
   # `cargo install` puts the binary in CARGO_HOME/bin, which is not always
@@ -127,11 +151,20 @@ command -v cargo-tauri >/dev/null 2>&1 || {
 
 # Sign a throwaway file with the real private key, then read the keynum
 # out of the produced signature.
+#
+# `cargo-tauri signer sign` maps the TAURI_SIGNING_PRIVATE_KEY environment
+# variable onto its `--private-key` argument. Passing `--private-key-path`
+# as well is a clap conflict ("the argument '--private-key-path' cannot be
+# used with '--private-key'"), and the error is easy to miss because the
+# signing step looks like a plain failure. The env vars are cleared for
+# this one invocation and everything is passed explicitly.
 head -c 4096 /dev/urandom > "$TMP/probe.bin"
-cargo-tauri signer sign \
-  --private-key-path "$KEY_PATH" \
-  --password "$VAULT_SIGNING_PRIVATE_KEY_PASSWORD" \
-  "$TMP/probe.bin" >/dev/null 2>&1 \
+env -u TAURI_SIGNING_PRIVATE_KEY \
+    -u TAURI_SIGNING_PRIVATE_KEY_PATH \
+    cargo-tauri signer sign \
+      --private-key-path "$KEY_PATH" \
+      --password "$SIGNING_PASSWORD" \
+      "$TMP/probe.bin" >/dev/null 2>&1 \
   || fail "could not sign a probe artefact with $KEY_PATH"
 
 python3 - "$PUBKEY" "$TMP/probe.bin.sig" <<'PY'

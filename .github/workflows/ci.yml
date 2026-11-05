@@ -243,16 +243,33 @@ jobs:
           exit "$failed"
 
       - name: No internal-only material in publishable files
-        # docs/INTERNAL.md is the single home for bucket identifiers, signing
-        # key paths/fingerprints, and owner handles. This step fails the build
-        # if any of that turns up in a file that would ship publicly, so a
-        # leak is caught when introduced rather than when the repo is flipped
-        # public.
+        # The guard checks the whole tree against two layers:
         #
-        # CHANGELOG.md is included because its section is copied verbatim
-        # into the GitHub release notes.
+        #   1. Generic secret SHAPES (private key blocks, cloud token
+        #      formats). These live in the script itself — they are
+        #      patterns, not values.
+        #   2. This project's SPECIFIC identifiers (the R2 account id, the
+        #      R2 access key id, the updater key fingerprint, the build
+        #      host's home path, the owner handles). These are NOT in the
+        #      repository — the file containing them is git-ignored, so
+        #      publishing the guard does not publish the answer. CI writes
+        #      them out from the `INTERNAL_IDENTIFIERS` secret.
+        #
+        # If the secret is absent, layer 2 is skipped and the script says
+        # so loudly rather than passing silently.
+        #
+        # CHANGELOG.md is included in the scan because its section is
+        # copied verbatim into the GitHub release notes.
         shell: bash
-        run: ./scripts/check-no-internal-leaks.sh
+        env:
+          INTERNAL_IDENTIFIERS: ${{ secrets.INTERNAL_IDENTIFIERS }}
+        run: |
+          if [ -n "$INTERNAL_IDENTIFIERS" ]; then
+            printf '%s' "$INTERNAL_IDENTIFIERS" > .internal-identifiers.local
+          else
+            echo "::warning::the INTERNAL_IDENTIFIERS secret is not set — layer 2 of the leak guard was skipped"
+          fi
+          ./scripts/check-no-internal-leaks.sh
 
       - name: shellcheck (best-effort)
         # Non-blocking: the upstream scripts predate shellcheck-clean and the

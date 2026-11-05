@@ -1,6 +1,6 @@
 [package]
 name = "functionfly-vault-desktop"
-version = "0.1.0"
+version = "1.0.0"
 description = "Cross-platform zero-knowledge vault client for FunctionFly"
 edition = "2021"
 # MSRV. The Tauri v2 dependency graph requires 1.90 (tauri-macros,
@@ -12,12 +12,12 @@ rust-version = "1.90"
 default-run = "functionfly-vault-desktop"
 
 [build-dependencies]
-tauri-build = { version = "2.6.3", features = [] }
+tauri-build = { version = "2.7.4", features = [] }
 
 [dependencies]
 # Tauri v2 — pinned to the same minor as studio-desktop so the two apps
 # stay on the same plugin API surface.
-tauri = { version = "2.11.5", features = [] }
+tauri = { version = "2.12.5", features = [] }
 # NOTE: `tauri-plugin-dialog`, `tauri-plugin-os` and `tauri-plugin-process`
 # were removed on 2026-11-03. They were Cargo dependencies and their
 # permissions were granted in `capabilities/default.toml`, but no plugin
@@ -35,26 +35,33 @@ tauri = { version = "2.11.5", features = [] }
 # `src/updater.rs::UpdaterConfig::from_env`. When `VAULT_UPDATER_PUBKEY`
 # is missing, every `vault_check_update` / `vault_apply_update` returns
 # `missing_pubkey` and the app refuses to trust an unsigned bundle.
-tauri-plugin-updater = "2.11.0"
+tauri-plugin-updater = "2.14.1"
 
 # Async + HTTP. The HTTP client is rustls-only (no OpenSSL) to match
 # studio-desktop and to keep the audit surface small.
-tokio = { version = "1.53.1", features = ["rt-multi-thread", "macros", "sync", "time", "fs", "io-util"] }
+tokio = { version = "1.54.1", features = ["rt-multi-thread", "macros", "sync", "time", "fs", "io-util"] }
 reqwest = { version = "0.13.4", default-features = false, features = ["json", "rustls"] }
 
 # Serialisation. Pinned to the same patch as studio-desktop.
 serde = { version = "1.0.229", features = ["derive"] }
-serde_json = "1.0.151"
+serde_json = "1.0.154"
 thiserror = "2"
 
 # Crypto. pbkdf2, aes-gcm, sha2 are exactly the primitives the dashboard's
 # `vault-crypto.ts` uses; matching these libraries guarantees interop.
 pbkdf2 = "0.13.0"
-sha2 = "0.11.0"
+sha2 = "0.11.1"
 aes-gcm = "0.11.1"
+# Argon2id, for the key_version 3 envelope. The orchestrator's client-wrap
+# path (`internal/storage/vault/client_crypto.go`) stamps that version on
+# Argon2id envelopes, and the Go SDK ships the same OWASP 2023 parameters
+# (`sdk/go-vault-sdk/vault/kdf.go`). Versions 1 and 2 stay PBKDF2 so the
+# dashboard and the other SDKs keep interoperating unchanged — reading a v3
+# payload cannot change how a v1 or v2 payload behaves.
+argon2 = "0.6.0"
 getrandom = "0.4.3"
 base64 = "0.23.1"
-zeroize = "1.8.2"
+zeroize = "1.9.1"
 
 # Keychain. All three native backends are required to cover macOS,
 # Windows, and Linux desktop users.
@@ -74,6 +81,7 @@ url = "2"
 
 tracing = "0.1.44"
 tracing-subscriber = { version = "0.3.23", features = ["env-filter"] }
+tauri-plugin-dialog = "2.8.4"
 
 [lib]
 name = "functionfly_vault_desktop_lib"
@@ -96,4 +104,10 @@ tempfile = "3"
 # orchestrator. Pinned to a pre-1.0 line to stay on the same major as the
 # `orchestrator-api` test suite.
 mockito = "1.7.2"
+# `minisign-verify` is the crate `tauri-plugin-updater` uses to verify an
+# update signature. It is already in the dependency graph transitively;
+# declaring it directly lets the updater artefact contract test verify a
+# real build's signature with exactly the code that will verify it at
+# runtime, rather than with a second implementation that could disagree.
+minisign-verify = "0.3.0"
 serde_json = "1.0.151"

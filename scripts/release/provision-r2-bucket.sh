@@ -31,6 +31,16 @@
 #                           be a concrete value when calling from this
 #                           script)
 #   R2_LIFECYCLE_DAYS     — noncurrent-version expiry in days (default: 30)
+#   VAULT_UPDATER_PUBLIC_HOST — the public hostname the bucket is served
+#                           from (default: updates.functionfly.com). The
+#                           custom domain is attached to the bucket in the
+#                           same Cloudflare ACCOUNT as the DNS zone.
+#   CF_ZONE_ID            — the Cloudflare zone id for that hostname
+#                           (required to attach the custom domain)
+#   CLOUDFLARE_API_TOKEN  — a Cloudflare API token with R2 write scope,
+#                           used to attach the custom domain. Objects are
+#                           still uploaded with the R2 credentials above;
+#                           this token is only needed for the domain.
 #
 # Note: this script uses the AWS S3 CLI with a custom endpoint because
 # R2 ships an S3-compatible API. Install with
@@ -43,6 +53,11 @@ set -euo pipefail
 R2_BUCKET="${R2_BUCKET:-functionfly-vault-updates}"
 R2_REGION="${R2_REGION:-auto}"
 R2_LIFECYCLE_DAYS="${R2_LIFECYCLE_DAYS:-30}"
+# The public hostname the bucket is served from. `publish-update.sh` writes
+# this same host into the manifest's `url` fields, so the two must agree:
+# a manifest pointing at a hostname the bucket is not attached to serves
+# URLs that 404 for every client.
+VAULT_UPDATER_PUBLIC_HOST="${VAULT_UPDATER_PUBLIC_HOST:-updates.functionfly.com}"
 # `R2_ENDPOINT_OVERRIDE` lets the smoke test (and local dev) route
 # to a local mock R2 instead of the real Cloudflare endpoint. When
 # unset we use the canonical R2 endpoint derived from `R2_ACCOUNT_ID`.
@@ -147,14 +162,94 @@ echo "$CORS_JSON" | aws s3api put-bucket-cors \
   --cors-configuration file:///dev/stdin
 echo "  CORS applied"
 
-# 5. Smoke-check the bucket via a write + read round-trip.
+# 5. Attach the public custom domain.
+#
+# WHY THIS STEP EXISTS
+# -------------------
+# Without it the bucket is reachable ONLY through the S3 API, which needs
+# credentials. The updater client has none: it fetches
+# `https://<host>/vault/<channel>/manifest.json` anonymously and then
+# downloads the artefact from the URL in that manifest. A bucket with no
+# custom domain attached answers such a request with a connection reset or
+# a hang — the DNS name resolves (it is a proxied Cloudflare record) but
+# no origin answers it. That is exactly the failure this step prevents:
+# a published manifest and a manifest URL that 404s for every client.
+#
+# The domain must live in the SAME Cloudflare account as the DNS zone,
+# or Cloudflare refuses the attachment.
+#
+# The attachment is idempotent: attaching an already-attached domain is a
+# no-op, so this script stays safe to re-run.
 echo
-echo "→ Step 5: round-trip probe (write + read + delete)"
+echo "→ Step 5: attach the public custom domain (${VAULT_UPDATER_PUBLIC_HOST})"
+if [[ -z "${CF_ZONE_ID:-}" || -z "${CLOUDFLARE_API_TOKEN:-}" ]]; then
+  echo "  SKIPPED: CF_ZONE_ID and CLOUDFLARE_API_TOKEN are not both set." >&2
+  echo "  Without a custom domain the updater CANNOT fetch the manifest:" >&2
+  echo "  the bucket is then reachable only with credentials, which the" >&2
+  echo "  updater client does not have." >&2
+  echo "  Set both and re-run, or attach the domain by hand:" >&2
+  echo "    wrangler r2 bucket domain add ${R2_BUCKET} \\" >&2
+  echo "      --domain ${VAULT_UPDATER_PUBLIC_HOST} --zone-id <zone-id>" >&2
+else
+  DOMAIN_STATUS="$(curl -sS \
+    -H "Authorization: Bearer ${CLOUDFLARE_API_TOKEN}" \
+    "https://api.cloudflare.com/client/v4/accounts/${R2_ACCOUNT_ID}/r2/buckets/${R2_BUCKET}/custom_domains" \
+    2>/dev/null || true)"
+
+  if printf '%s' "$DOMAIN_STATUS" | grep -q "\"domain\":\"${VAULT_UPDATER_PUBLIC_HOST}\""; then
+    echo "  already attached"
+  else
+    ATTACH_RESPONSE="$(curl -sS -X POST \
+      -H "Authorization: Bearer ${CLOUDFLARE_API_TOKEN}" \
+      -H "Content-Type: application/json" \
+      -d "{\"hostname\":\"${VAULT_UPDATER_PUBLIC_HOST}\",\"zone_id\":\"${CF_ZONE_ID}\"}" \
+      "https://api.cloudflare.com/client/v4/accounts/${R2_ACCOUNT_ID}/r2/buckets/${R2_BUCKET}/custom_domains" \
+      2>/dev/null || true)"
+
+    if printf '%s' "$ATTACH_RESPONSE" | grep -q '"success":true'; then
+      echo "  attached (SSL issuance and ownership validation take a few minutes)"
+    else
+      echo "  FAILED to attach ${VAULT_UPDATER_PUBLIC_HOST}:" >&2
+      printf '%s\n' "$ATTACH_RESPONSE" >&2
+      echo "  The updater will not be able to fetch the manifest until this" >&2
+      echo "  succeeds. Attach it with:" >&2
+      echo "    wrangler r2 bucket domain add ${R2_BUCKET} \\" >&2
+      echo "      --domain ${VAULT_UPDATER_PUBLIC_HOST} --zone-id ${CF_ZONE_ID}" >&2
+      exit 1
+    fi
+  fi
+fi
+
+# 6. Smoke-check the bucket via a write + read round-trip.
+echo
+echo "→ Step 6: round-trip probe (write + read + delete)"
 PROBE_KEY="vault/_probe-$(date +%s)"
 echo "probe-payload-$(date +%s)" | aws s3 cp - "s3://${R2_BUCKET}/${PROBE_KEY}" --endpoint-url "$ENDPOINT" >/dev/null
 aws s3 cp "s3://${R2_BUCKET}/${PROBE_KEY}" - --endpoint-url "$ENDPOINT" >/dev/null
 aws s3 rm "s3://${R2_BUCKET}/${PROBE_KEY}" --endpoint-url "$ENDPOINT" >/dev/null
 echo "  probe OK"
+
+# 7. Prove the PUBLIC path works, not just the credentialed one.
+#
+# The round-trip above proves the bucket is writable and readable BY THE
+# OPERATOR. It says nothing about the updater client, which has no
+# credentials. This probe fetches over the public hostname with no auth
+# and no cookie jar, exactly as an installed client would.
+echo
+echo "→ Step 7: anonymous public-reachability probe"
+PROBE_KEY="vault/_probe-public-$(date +%s)"
+echo "probe-payload-$(date +%s)" | aws s3 cp - "s3://${R2_BUCKET}/${PROBE_KEY}" --endpoint-url "$ENDPOINT" >/dev/null
+PUBLIC_CODE="$(curl -s -o /dev/null -w '%{http_code}' --max-time 25 \
+  "https://${VAULT_UPDATER_PUBLIC_HOST}/${PROBE_KEY}" 2>/dev/null || echo 000)"
+aws s3 rm "s3://${R2_BUCKET}/${PROBE_KEY}" --endpoint-url "$ENDPOINT" >/dev/null
+if [[ "$PUBLIC_CODE" = "200" ]]; then
+  echo "  anonymous GET https://${VAULT_UPDATER_PUBLIC_HOST}/${PROBE_KEY} -> 200 OK"
+else
+  echo "  FAILED: anonymous GET https://${VAULT_UPDATER_PUBLIC_HOST}/${PROBE_KEY} -> ${PUBLIC_CODE}" >&2
+  echo "  The bucket is not publicly reachable. An installed client would" >&2
+  echo "  fetch the manifest and receive this same failure." >&2
+  exit 1
+fi
 
 cat <<EOF
 

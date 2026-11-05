@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useState } from "react";
 import { ipc } from "../lib/ipc";
 import { VaultIpcError } from "../lib/tauri";
+import { AuditChainPanel } from "./AuditChainPanel";
 
 export function AuditLog() {
   const [data, setData] = useState<unknown>(null);
@@ -8,25 +9,37 @@ export function AuditLog() {
   const [error, setError] = useState<string | null>(null);
   const [action, setAction] = useState("");
   const [limit, setLimit] = useState(100);
+  const [actorType, setActorType] = useState("");
+  const [actorId, setActorId] = useState("");
+  const [showChain, setShowChain] = useState(false);
 
   const fetch_ = useCallback(async () => {
     setLoading(true);
     setError(null);
     try {
-      // When the operator has typed an action filter, route through the
-      // orchestrator's per-action path. Otherwise return everything. Per-
-      // secret and per-actor filters are exposed via the IPC layer but not
-      // surfaced in this view yet — they're a follow-up.
-      const r = action.trim()
-        ? await ipc.listAuditByAction(action.trim(), limit)
-        : await ipc.listAudit(undefined, limit);
+      // Three filter paths, in priority order:
+      //   1. an actor type AND an actor id → the per-actor route
+      //   2. an action                 → the per-action route
+      //   3. neither                   → everything
+      //
+      // The per-actor route existed in the IPC layer from the start but
+      // was never surfaced here; the comment in this file used to call it
+      // "a follow-up".
+      const trimmedType = actorType.trim();
+      const trimmedId = actorId.trim();
+      const r =
+        trimmedType && trimmedId
+          ? await ipc.listAuditByActor(trimmedType, trimmedId, limit)
+          : action.trim()
+          ? await ipc.listAuditByAction(action.trim(), limit)
+          : await ipc.listAudit(undefined, limit);
       setData(r);
     } catch (e) {
       setError(e instanceof VaultIpcError ? e.message : String(e));
     } finally {
       setLoading(false);
     }
-  }, [action, limit]);
+  }, [action, limit, actorType, actorId]);
 
   useEffect(() => {
     fetch_();
@@ -43,6 +56,24 @@ export function AuditLog() {
           value={action}
           onChange={(e) => setAction(e.target.value)}
         />
+        <select
+          className="input w-28"
+          value={actorType}
+          onChange={(e) => setActorType(e.target.value)}
+        >
+          <option value="">Actor type</option>
+          {["user", "token", "system", "api_key"].map((t) => (
+            <option key={t} value={t}>
+              {t}
+            </option>
+          ))}
+        </select>
+        <input
+          className="input w-40"
+          placeholder="Actor ID"
+          value={actorId}
+          onChange={(e) => setActorId(e.target.value)}
+        />
         <input
           className="input w-24"
           type="number"
@@ -56,7 +87,19 @@ export function AuditLog() {
         <button onClick={fetch_} className="btn-secondary" disabled={loading}>
           {loading ? "Loading…" : "Refresh"}
         </button>
+        <button
+          onClick={() => setShowChain((v) => !v)}
+          className="btn-secondary"
+        >
+          {showChain ? "Hide chain" : "Chain integrity"}
+        </button>
       </header>
+
+      {showChain && (
+        <div className="p-3 border-b border-neutral-200 dark:border-neutral-800">
+          <AuditChainPanel />
+        </div>
+      )}
 
       {error && (
         <div className="m-3 rounded-md bg-red-50 dark:bg-red-900/30 border border-red-200 dark:border-red-800 px-3 py-2 text-xs text-red-800 dark:text-red-200">

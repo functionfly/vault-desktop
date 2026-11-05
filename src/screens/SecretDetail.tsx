@@ -1,6 +1,8 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { ipc, type RevealResult } from "../lib/ipc";
 import { VaultIpcError } from "../lib/tauri";
+import { cancelPendingClear, copySecret } from "../lib/clipboard";
+import { SecretAuditDrawer } from "./SecretAuditDrawer";
 
 interface Props {
   id: string;
@@ -9,7 +11,14 @@ interface Props {
   onEdit: (id: string) => void;
 }
 
-type Tab = "details" | "versions" | "diff" | "rollback" | "rotate" | "tokens";
+type Tab =
+  | "details"
+  | "versions"
+  | "diff"
+  | "rollback"
+  | "rotate"
+  | "tokens"
+  | "audit";
 
 export function SecretDetail({ id, onClose, onChanged, onEdit }: Props) {
   const [tab, setTab] = useState<Tab>("details");
@@ -75,6 +84,9 @@ export function SecretDetail({ id, onClose, onChanged, onEdit }: Props) {
           <Pill active={tab === "tokens"} onClick={() => setTab("tokens")}>
             Tokens
           </Pill>
+          <Pill active={tab === "audit"} onClick={() => setTab("audit")}>
+            Audit
+          </Pill>
         </nav>
 
         <div className="flex-1 min-h-0 overflow-y-auto p-4 text-sm space-y-4">
@@ -112,6 +124,7 @@ export function SecretDetail({ id, onClose, onChanged, onEdit }: Props) {
               onChanged={onChanged}
             />
           )}
+          {tab === "audit" && <SecretAuditDrawer secretId={id} />}
         </div>
       </div>
     </div>
@@ -142,6 +155,19 @@ function Details({ secret }: { secret: Record<string, unknown> | null }) {
   const [revealing, setRevealing] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [copied, setCopied] = useState(false);
+  // The handle for the pending clipboard wipe, so hiding the value or
+  // unmounting can cancel it. Without this, a pending wipe could fire after
+  // the user copied something else and destroy their clipboard.
+  const clearHandle = useRef<{ cancel: () => void } | null>(null);
+
+  // Cancel any pending wipe when this panel goes away.
+  useEffect(() => {
+    return () => {
+      clearHandle.current?.cancel();
+      clearHandle.current = null;
+      cancelPendingClear();
+    };
+  }, []);
 
   async function doReveal() {
     if (!secret) return;
@@ -158,9 +184,24 @@ function Details({ secret }: { secret: Record<string, unknown> | null }) {
     }
   }
 
+  /** Hides the revealed value and cancels any pending clipboard wipe. */
+  function hide() {
+    clearHandle.current?.cancel();
+    clearHandle.current = null;
+    cancelPendingClear();
+    setReveal(null);
+    setCopied(false);
+  }
+
   if (!secret) {
     return <div className="text-neutral-500">Loading…</div>;
   }
+
+  // A platform-held secret has no client-side envelope: the platform
+  // encrypted it with the tenant's data-encryption key. Offering a
+  // "Reveal" button for it would only produce a confusing failure, so the
+  // UI says so plainly instead.
+  const platformHeld = secret.zk_mode === false;
 
   return (
     <div className="space-y-3">
@@ -175,6 +216,15 @@ function Details({ secret }: { secret: Record<string, unknown> | null }) {
         <Field label="Created" value={String(secret.created_at ?? "")} />
         <Field label="Updated" value={String(secret.updated_at ?? "")} />
       </div>
+
+      {platformHeld && (
+        <div className="rounded-md bg-amber-50 dark:bg-amber-900/30 border border-amber-200 dark:border-amber-800 px-3 py-2 text-xs text-amber-800 dark:text-amber-200">
+          <strong>Platform-held secret.</strong> The platform encrypts this
+          value with the tenant's data-encryption key, so the desktop client
+          cannot decrypt it. It can still back a capability grant — that is
+          the only kind of secret that can.
+        </div>
+      )}
 
       <div>
         <div className="label">Plaintext</div>
@@ -192,17 +242,30 @@ function Details({ secret }: { secret: Record<string, unknown> | null }) {
               <button
                 className="btn-secondary"
                 onClick={async () => {
-                  await navigator.clipboard.writeText(reveal.plaintext);
-                  setCopied(true);
-                  setTimeout(() => setCopied(false), 1500);
+                  try {
+                    const handle = await copySecret(reveal.plaintext);
+                    clearHandle.current = handle;
+                    setCopied(true);
+                    setTimeout(() => setCopied(false), 1500);
+                  } catch {
+                    setError("Could not write to the clipboard.");
+                  }
                 }}
               >
                 {copied ? "Copied" : "Copy"}
               </button>
-              <button className="btn-secondary" onClick={() => setReveal(null)}>
+              <button className="btn-secondary" onClick={hide}>
                 Hide
               </button>
             </div>
+            <div className="text-xs text-neutral-500">
+              The clipboard is cleared automatically after 30 seconds.
+            </div>
+          </div>
+        ) : platformHeld ? (
+          <div className="text-xs text-neutral-500">
+            Not available in the desktop client — this secret is held by the
+            platform.
           </div>
         ) : (
           <button

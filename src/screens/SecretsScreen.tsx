@@ -5,8 +5,35 @@ import { SecretDetail } from "./SecretDetail";
 import { SecretEditor } from "./SecretEditor";
 import { AuditLog } from "./AuditLog";
 import { UpdaterScreen } from "./UpdaterScreen";
+import { DynamicCredentials } from "./DynamicCredentials";
+import { Capabilities } from "./Capabilities";
+import { MfaScreen } from "./MfaScreen";
+import { ImportExport } from "./ImportExport";
+import { OfflineBanner } from "./OfflineBanner";
 
-type Tab = "secrets" | "audit" | "namespaces" | "updater";
+type Tab =
+  | "secrets"
+  | "audit"
+  | "namespaces"
+  | "dynamic"
+  | "capabilities"
+  | "mfa"
+  | "transfer"
+  | "updater";
+
+/**
+ * The secret types the orchestrator accepts.
+ *
+ * `dynamic_credential` is intentionally absent: those are minted by a
+ * provider, not typed in, so they never appear in the vault list.
+ */
+const SECRET_TYPES = [
+  { value: "api_key", label: "API key" },
+  { value: "oauth_token", label: "OAuth token" },
+  { value: "password", label: "Password" },
+  { value: "certificate", label: "Certificate" },
+  { value: "federation_key", label: "Federation key" },
+] as const;
 
 interface Props {
   status: VaultStatus;
@@ -19,9 +46,14 @@ export function SecretsScreen({ status, onLock, onSignOut }: Props) {
   const [search, setSearch] = useState("");
   const [debouncedSearch, setDebouncedSearch] = useState("");
   const [namespace, setNamespace] = useState("");
+  const [secretType, setSecretType] = useState("");
   const [data, setData] = useState<ListSecretsResult | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  // True when the orchestrator could not be REACHED (as opposed to
+  // rejecting the request). The offline banner depends on the
+  // distinction.
+  const [offline, setOffline] = useState(false);
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [editorOpen, setEditorOpen] = useState(false);
   const [editTarget, setEditTarget] = useState<string | null>(null);
@@ -39,9 +71,14 @@ export function SecretsScreen({ status, onLock, onSignOut }: Props) {
       const res = await ipc.listSecrets({
         search: debouncedSearch || undefined,
         namespace: namespace || undefined,
+        // The orchestrator already accepts a `secret_type` filter — the
+        // IPC layer declared it from the start but never sent it, so the
+        // dropdown had no effect.
+        secret_type: secretType || undefined,
         limit: 100,
       });
       setData(res);
+      setOffline(false);
     } catch (e) {
       const msg = e instanceof VaultIpcError
         ? e.message
@@ -49,10 +86,17 @@ export function SecretsScreen({ status, onLock, onSignOut }: Props) {
         ? e.message
         : String(e);
       setError(msg);
+      // A transport failure means the orchestrator could not be reached.
+      // That is different from "the request was rejected" and the UI
+      // should say so, because the empty list means something different
+      // in each case.
+      setOffline(
+        e instanceof VaultIpcError && e.kind === "transport",
+      );
     } finally {
       setLoading(false);
     }
-  }, [debouncedSearch, namespace]);
+  }, [debouncedSearch, namespace, secretType]);
 
   useEffect(() => {
     if (tab === "secrets") fetch();
@@ -174,7 +218,7 @@ export function SecretsScreen({ status, onLock, onSignOut }: Props) {
           )}
         </div>
 
-        <nav className="flex-1 p-2 space-y-1 text-sm">
+        <nav className="flex-1 p-2 space-y-1 text-sm overflow-y-auto">
           <NavButton active={tab === "secrets"} onClick={() => setTab("secrets")}>
             Secrets
             {data ? <span className="ml-auto text-xs text-neutral-400">{data.total}</span> : null}
@@ -184,6 +228,18 @@ export function SecretsScreen({ status, onLock, onSignOut }: Props) {
           </NavButton>
           <NavButton active={tab === "namespaces"} onClick={() => setTab("namespaces")}>
             Namespaces
+          </NavButton>
+          <NavButton active={tab === "dynamic"} onClick={() => setTab("dynamic")}>
+            Dynamic credentials
+          </NavButton>
+          <NavButton active={tab === "capabilities"} onClick={() => setTab("capabilities")}>
+            Capabilities
+          </NavButton>
+          <NavButton active={tab === "mfa"} onClick={() => setTab("mfa")}>
+            Vault MFA
+          </NavButton>
+          <NavButton active={tab === "transfer"} onClick={() => setTab("transfer")}>
+            Import / export
           </NavButton>
           <NavButton active={tab === "updater"} onClick={() => setTab("updater")}>
             Updater
@@ -208,8 +264,11 @@ export function SecretsScreen({ status, onLock, onSignOut }: Props) {
             setSearch={setSearch}
             namespace={namespace}
             setNamespace={setNamespace}
+            secretType={secretType}
+            setSecretType={setSecretType}
             loading={loading}
             error={error}
+            offline={offline}
             secrets={secrets}
             selectedIds={selectedIds}
             onToggleSelected={toggleSelected}
@@ -225,6 +284,10 @@ export function SecretsScreen({ status, onLock, onSignOut }: Props) {
         )}
         {tab === "audit" && <AuditLog />}
         {tab === "namespaces" && <NamespaceList />}
+        {tab === "dynamic" && <DynamicCredentials />}
+        {tab === "capabilities" && <Capabilities />}
+        {tab === "mfa" && <MfaScreen />}
+        {tab === "transfer" && <ImportExport />}
         {tab === "updater" && <UpdaterScreen />}
 
         {selectedId && (
@@ -297,8 +360,11 @@ function SecretsList({
   setSearch,
   namespace,
   setNamespace,
+  secretType,
+  setSecretType,
   loading,
   error,
+  offline,
   secrets,
   selectedIds,
   onToggleSelected,
@@ -315,8 +381,11 @@ function SecretsList({
   setSearch: (s: string) => void;
   namespace: string;
   setNamespace: (s: string) => void;
+  secretType: string;
+  setSecretType: (s: string) => void;
   loading: boolean;
   error: string | null;
+  offline: boolean;
   secrets: Array<Record<string, unknown>>;
   selectedIds: Set<string>;
   onToggleSelected: (id: string) => void;
@@ -336,6 +405,7 @@ function SecretsList({
 
   return (
     <>
+      <OfflineBanner offline={offline} error={error} />
       <header className="flex flex-col gap-2 border-b border-neutral-200 dark:border-neutral-800">
         <div className="flex items-center gap-2 p-3">
           <input
@@ -350,6 +420,19 @@ function SecretsList({
             value={namespace}
             onChange={(e) => setNamespace(e.target.value)}
           />
+          <select
+            className="input w-36"
+            value={secretType}
+            onChange={(e) => setSecretType(e.target.value)}
+            aria-label="Filter by type"
+          >
+            <option value="">All types</option>
+            {SECRET_TYPES.map((t) => (
+              <option key={t.value} value={t.value}>
+                {t.label}
+              </option>
+            ))}
+          </select>
           <button onClick={onRefresh} className="btn-secondary" disabled={loading}>
             {loading ? "Loading…" : "Refresh"}
           </button>
@@ -420,6 +503,13 @@ function SecretsList({
               const type = String(s.secret_type ?? "");
               const ns = String(s.namespace ?? "default");
               const isSelected = selectedIds.has(id);
+              // A platform-held secret (zk_mode off) is the only kind a
+              // capability grant can serve, so it is worth flagging.
+              const platformHeld = s.zk_mode === false;
+              const expiresAt = s.expires_at ? String(s.expires_at) : "";
+              const expired =
+                expiresAt !== "" &&
+                new Date(expiresAt).getTime() <= Date.now();
               return (
                 <li
                   key={id}
@@ -442,11 +532,35 @@ function SecretsList({
                     onClick={() => onSelect(id)}
                     className="min-w-0 flex-1 text-left"
                   >
-                    <div className="text-sm font-medium truncate">{name}</div>
+                    <div className="text-sm font-medium truncate">
+                      {name}
+                      {platformHeld && (
+                        <span
+                          className="ml-2 rounded px-1.5 py-0.5 text-[10px] bg-amber-100 text-amber-800 dark:bg-amber-900/40 dark:text-amber-200"
+                          title="Held by the platform — can back a capability grant"
+                        >
+                          platform-held
+                        </span>
+                      )}
+                      {expired && (
+                        <span
+                          className="ml-2 rounded px-1.5 py-0.5 text-[10px] bg-red-100 text-red-800 dark:bg-red-900/40 dark:text-red-200"
+                          title="This secret has expired"
+                        >
+                          expired
+                        </span>
+                      )}
+                    </div>
                     <div className="text-[11px] text-neutral-500 dark:text-neutral-400">
                       <span className="font-mono">{type || "—"}</span>
                       <span className="mx-1">·</span>
                       <span>{ns}</span>
+                      {expiresAt && (
+                        <>
+                          <span className="mx-1">·</span>
+                          <span>expires {new Date(expiresAt).toLocaleDateString()}</span>
+                        </>
+                      )}
                     </div>
                   </button>
                 </li>

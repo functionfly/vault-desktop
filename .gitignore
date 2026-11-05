@@ -29,6 +29,14 @@ Thumbs.db
 *.log
 logs/
 
+# The internal-identifier blocklist used by
+# `scripts/check-no-internal-leaks.sh`. It lists the exact strings that
+# must never be published, so committing it would publish them. The
+# guard reads it from the working tree on the build host; CI injects it
+# from a repository secret.
+.internal-identifiers.local
+internal-identifiers.txt
+
 # Generated evidence / smoke run logs
 artifacts/
 /tmp/

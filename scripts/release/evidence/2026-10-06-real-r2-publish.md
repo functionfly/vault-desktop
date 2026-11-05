@@ -9,12 +9,13 @@ decrypted from `.env` via dotenvx.
 ## Environment
 
 > **Redacted for publication.** Real account IDs, key IDs, key paths, and
-> fingerprints live in [`docs/INTERNAL.md`](../../docs/INTERNAL.md). The values
-> below are shape-accurate placeholders so this transcript still documents *what*
-> was run without handing out live infrastructure identifiers.
+> fingerprints live in the maintainers' private runbook, which is not part of
+> this repository. The values below are shape-accurate placeholders so this
+> transcript still documents *what* was run without handing out live
+> infrastructure identifiers.
 
 ```
-R2_ACCOUNT_ID      = <32 hex, see docs/INTERNAL.md>
+R2_ACCOUNT_ID      = <32 hex, see the private runbook>
 R2_ACCESS_KEY_ID   = <32 chars, dev-scoped to one bucket>
 R2_SECRET_ACCESS_KEY = <64 chars>
 R2_ENDPOINT        = https://<account-id>.r2.cloudflarestorage.com
@@ -70,9 +71,9 @@ R2_BUCKET=functionfly-vault-updates ./scripts/release/publish-update.sh stable 0
 → uploading manifest   to s3://functionfly-vault-updates/vault/stable/manifest.json                                      ok
 
 ── Done ──
-  side-car:  https://updates.functionfly.app/vault/stable/0.0.1/functionfly-vault-desktop_0.0.1.tar.gz
-  signature: https://updates.functionfly.app/vault/stable/0.0.1/functionfly-vault-desktop_0.0.1.tar.gz.sig
-  manifest:  https://updates.functionfly.app/vault/stable/manifest.json
+  side-car:  https://updates.functionfly.com/vault/stable/0.0.1/functionfly-vault-desktop_0.0.1.tar.gz
+  signature: https://updates.functionfly.com/vault/stable/0.0.1/functionfly-vault-desktop_0.0.1.tar.gz.sig
+  manifest:  https://updates.functionfly.com/vault/stable/manifest.json
 exit=0
 ```
 
@@ -99,8 +100,8 @@ exit=0
   "notes": "vault 0.0.1 (channel: stable)",
   "platforms": {
     "x86_64-unknown-linux-gnu": {
-      "url": "https://updates.functionfly.app/vault/stable/0.0.1/functionfly-vault-desktop_0.0.1.tar.gz",
-      "signature": "https://updates.functionfly.app/vault/stable/0.0.1/functionfly-vault-desktop_0.0.1.tar.gz.sig"
+      "url": "https://updates.functionfly.com/vault/stable/0.0.1/functionfly-vault-desktop_0.0.1.tar.gz",
+      "signature": "https://updates.functionfly.com/vault/stable/0.0.1/functionfly-vault-desktop_0.0.1.tar.gz.sig"
     }
   }
 }

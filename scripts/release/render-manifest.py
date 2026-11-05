@@ -95,6 +95,18 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
         default=None,
         help="path to the manifest currently published for this channel (optional)",
     )
+    parser.add_argument(
+        "--repoint",
+        action="store_true",
+        help=(
+            "allow a target's URL to change for a version that is already "
+            "published. Off by default: repointing a live version silently "
+            "would serve different bytes to clients that already cached the "
+            "manifest. Use it ONLY to repair a publication that was broken "
+            "and therefore never reachable (e.g. a manifest published "
+            "against the wrong hostname)."
+        ),
+    )
     parser.add_argument("--out", default=None, help="write the manifest here (default: stdout)")
     return parser.parse_args(argv)
 
@@ -207,7 +219,7 @@ def build_manifest(args: argparse.Namespace) -> dict:
 
     for target in targets:
         previous = platforms.get(target)
-        if previous is not None and previous["url"] != args.url:
+        if previous is not None and previous["url"] != args.url and not args.repoint:
             fail(
                 f"target '{target}' already points at {previous['url']} for version "
                 f"{version}; refusing to repoint it at {args.url}"

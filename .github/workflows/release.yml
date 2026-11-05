@@ -447,4 +447,4 @@ jobs:
           ./scripts/release/publish-updater-assets.sh "$CHANNEL" "$VERSION" ./sidecars
 
           echo "Updater manifest published for ${CHANNEL}/${VERSION}."
-          echo "Fetch it from: https://updates.functionfly.app/vault/${CHANNEL}/manifest.json"
+          echo "Fetch it from: https://updates.functionfly.com/vault/${CHANNEL}/manifest.json"

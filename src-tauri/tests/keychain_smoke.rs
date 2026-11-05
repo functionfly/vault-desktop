@@ -37,8 +37,35 @@
 //! place so a shell wrapper can confirm it through the platform's own
 //! tooling (`cmdkey`, `security`, `secret-tool`) and then delete it.
 //! The default is to clean up after itself.
+//!
+//! SERIALIZATION
+//! -------------
+//! Both tests in this file write to and clear the SAME OS credential-store
+//! entry (`SecretStore` has one fixed account name). `cargo test` runs the
+//! tests in this binary on parallel threads, so without a lock the two
+//! would race: one clears the credential while the other is between its
+//! `save_session` and its `load_session`. The failure is intermittent and
+//! looks like a keychain bug, which it is not.
+//!
+//! The `PROBE_LOCK` below serializes them.
 
 use functionfly_vault_desktop_lib::store::{BackendKind, SecretStore};
+use std::sync::OnceLock;
+use tokio::sync::{Mutex, MutexGuard};
+
+/// Serializes the tests in this file against the shared credential entry.
+///
+/// A `tokio::sync::Mutex` rather than `std::sync::Mutex`: the guard is held
+/// across `await` points in the tests, and holding a std lock across an
+/// await is a bug (and clippy rejects it).
+static PROBE_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+
+async fn probe_lock() -> MutexGuard<'static, ()> {
+    PROBE_LOCK
+        .get_or_init(|| Mutex::new(()))
+        .lock()
+        .await
+}
 
 /// Unique-ish account material so a probe never collides with a real
 /// session that happens to be stored on the same machine.
@@ -64,6 +91,8 @@ fn keep_probe() -> bool {
 
 #[tokio::test]
 async fn session_round_trips_through_the_os_keychain() {
+    // Serialize against the sibling test: they share one credential entry.
+    let _guard = probe_lock().await;
     let store = SecretStore::new();
 
     // Start from a clean slate. A previous crashed run could otherwise
@@ -144,6 +173,8 @@ async fn session_round_trips_through_the_os_keychain() {
 
 #[tokio::test]
 async fn cleared_session_reports_empty() {
+    // Serialize against the sibling test: they share one credential entry.
+    let _guard = probe_lock().await;
     let store = SecretStore::new();
     let _ = store.clear_session().await;
 

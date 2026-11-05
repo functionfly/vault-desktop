@@ -9,11 +9,37 @@
 #     Rust core with the bearer attached server-side, so XSS in the React
 #     bundle cannot exfiltrate the access token.
 #   * No shell:allow-execute / shell:allow-spawn — vault never shells out.
-#   * No clipboard:* — copy-to-clipboard is gated by an explicit reveal action
-#     on the Rust side; the webview itself does not need a clipboard scope.
+#   * No clipboard:* — copy-to-clipboard uses the webview's own DOM
+#     Clipboard API, not a Tauri plugin, so there is no plugin permission
+#     to grant. The reveal is still an explicit user action.
 #
-# SECURITY REVIEW PENDING (security-specialist): do NOT widen this manifest
-# without a STRIDE review of the IPC surface.
+# CHANGED 2026-11-04 (v0.2.0): the vault now touches local files, but ONLY
+# through two typed Rust commands (`export_secrets`, `read_secret_export`)
+# that require an authenticated session. The webview still has NO
+# `fs:*` scope, so it cannot read or write an arbitrary path on its own.
+# The export carries secret METADATA only: never a ciphertext, never a
+# plaintext.
+#
+# CHANGED 2026-11-04 (v1.0.0 launch review): the export/import commands
+# stopped taking a path from the webview. They used to accept one, which
+# made the Rust core a confused deputy: the webview could name any path
+# and the core would read or write it, so the missing `fs:*` scope bought
+# nothing. The core now opens the native file dialog itself and the user
+# picks the location, so the webview cannot choose where the data goes.
+#
+# That is also why `dialog:*` is NOT in the permission list below. The
+# dialog plugin is registered in `lib.rs` and used only from Rust, and
+# Tauri permissions gate the webview->core direction. Granting `dialog:*`
+# would let the webview open the picker itself, learn the chosen path,
+# and hand it back to a path-taking command — reopening the hole the
+# dialog closed.
+#
+# `src-tauri/tests/security_contract.rs` asserts all of the above and
+# fails the build if any of it regresses.
+#
+# SECURITY REVIEWED 2026-11-04: the IPC surface has been through a STRIDE
+# review (see `docs/SECURITY-REVIEW.md`). Do NOT widen this manifest
+# without repeating it.
 
 "$schema" = "../gen/schemas/desktop-schema.json"
 
@@ -47,14 +73,17 @@ permissions = [
 ]
 
 # Deliberately ABSENT (deny-by-default; add only with security sign-off):
-#   fs:*                      — jail is unnecessary; vault touches no local files
+#   fs:*                      — the core does all file IO, on a path the
+#                                USER picks in a native dialog
 #   shell:allow-execute       — never
 #   shell:allow-spawn         — never
 #   http:*                    — all HTTP is in the Rust core
 #   global-shortcut:*         — unused
 #   clipboard:*               — explicit reveal action in Rust
-#   dialog:*, os:*, process:* — the corresponding plugins were never
+#   dialog:*                  — the dialog is the CORE's, not the webview's.
+#                                See the note above; granting it would let
+#                                the webview learn the chosen path.
+#   os:*, process:*           — the corresponding plugins are not
 #                                registered in `lib.rs` and no webview code
-#                                called them. Their permissions were removed
-#                                on 2026-11-03; re-adding a plugin means
+#                                calls them. Re-adding a plugin means
 #                                registering it in `lib.rs` first.
