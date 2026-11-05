@@ -307,9 +307,21 @@ report_to_github() {
     return 0
   fi
 
-  # `gh run rerun` is not an option (no Actions). The check-run API is,
-  # and it needs `checks: write` — which the `repo` scope grants on a
-  # private repository.
+  # `gh run rerun` is not an option (no Actions runner). Publishing the
+  # result back to GitHub is, and there are two ways to do it.
+  #
+  # The CHECK-RUN API is the richer one (it renders in the PR view with
+  # per-step detail) but it now requires a GitHub App: a personal access
+  # token gets "You must authenticate via a GitHub App." — and this
+  # repository's only credential is a PAT.
+  #
+  # The COMMIT-STATUS API still accepts a PAT, and a branch protection
+  # rule's `required_status_checks.contexts` matches a status context
+  # exactly as it matches a check-run name. So the status API is the one
+  # that works here, and it is what the branch protection rules require.
+  #
+  # The check-run API is kept as a fallback for a setup where a GitHub
+  # App token IS available.
   local title summary conclusion
   if [[ ${#FAILED_JOBS[@]} -eq 0 ]]; then
     title="portable CI: pass"
@@ -319,16 +331,28 @@ report_to_github() {
     conclusion="failure"
   fi
 
-  summary=$(printf '%s\n' "${SUMMARY[@]}" | sed 's/|/ — /g')
+  summary=$(printf '%s\n' "${SUMMARY[@]}" | sed 's/|/ — /g' | tr '\n' ' ')
 
-  gh api --method POST "repos/${repo}/check-runs" \
-    -f "name=portable CI" \
-    -f "head_sha=${head_sha}" \
-    -f "status=completed" \
-    -f "conclusion=${conclusion}" \
-    -f "title=${title}" \
-    -f "summary=${summary}" \
-    --jq '.html_url' 2>&1 | tail -1
+  local out
+  out=$(gh api --method POST "repos/${repo}/statuses/${head_sha}" \
+    -f "state=${conclusion}" \
+    -f "context=portable CI" \
+    -f "description=${title}" \
+    --jq '.html_url' 2>&1 | tail -1)
+
+  if [[ "$out" == *"GitHub App"* || "$out" == *"403"* ]]; then
+    echo "  the status API was refused; trying the check-run API"
+    gh api --method POST "repos/${repo}/check-runs" \
+      -f "name=portable CI" \
+      -f "head_sha=${head_sha}" \
+      -f "status=completed" \
+      -f "conclusion=${conclusion}" \
+      -f "title=${title}" \
+      -f "summary=${summary}" \
+      --jq '.html_url' 2>&1 | tail -1
+  else
+    echo "$out"
+  fi
 }
 
 # ── Run ─────────────────────────────────────────────────────────────────
