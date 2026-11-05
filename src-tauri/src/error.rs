@@ -23,6 +23,10 @@ pub enum AppErrorKind {
     PlanDenied,
     /// Resource does not exist (404, etc.).
     NotFound,
+    /// The secret is held by the PLATFORM rather than the client — its
+    /// zero-knowledge flag is off, so there is no client-side envelope to
+    /// open. Retrying or re-entering the passphrase will not help.
+    PlatformHeld,
     /// CSRF validation failed even after a refresh. The UI should retry.
     CsrfFailed,
     /// Input failed client-side validation before it ever hit the network.
@@ -32,6 +36,9 @@ pub enum AppErrorKind {
     Storage,
     /// Network or orchestrator reachability problem.
     Transport,
+    /// The user dismissed a native dialog. Not a failure — the UI should
+    /// simply stand down rather than show an error.
+    Cancelled,
     /// Anything else; details in `message`.
     Unknown,
 }

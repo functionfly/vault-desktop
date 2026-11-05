@@ -3,6 +3,43 @@
 // use normal async functions without knowing about the IPC layer.
 
 import { invoke } from "./tauri";
+import type {
+  AuditChainStatus,
+  AuditChainVerifyResult,
+  CreateDynamicCredentialInput,
+  CreateDynamicTargetInput,
+  CreateFederationKeyInput,
+  GeneratedCredential,
+  IdleSettings,
+  MfaConfig,
+  MfaVerifyResult,
+  MetadataCacheResult,
+  SecretExportResult,
+  SecretExportSummary,
+  SecretPresence,
+  ShareSecretInput,
+} from "./vault-types";
+
+export type {
+  AuditChainBreak,
+  AuditChainSegment,
+  AuditChainStatus,
+  AuditChainVerifyResult,
+  CachedSecretMetadata,
+  CreateDynamicCredentialInput,
+  CreateDynamicTargetInput,
+  CreateFederationKeyInput,
+  DynamicDbType,
+  GeneratedCredential,
+  IdleSettings,
+  MfaConfig,
+  MfaVerifyResult,
+  MetadataCacheResult,
+  SecretExportResult,
+  SecretExportSummary,
+  SecretPresence,
+  ShareSecretInput,
+} from "./vault-types";
 
 export interface LoginUser {
   id: string;
@@ -86,6 +123,15 @@ export interface CreateSecretInput {
   plaintext: string;
   namespace?: string;
   scopes?: string[];
+  /**
+   * Ask the PLATFORM to hold this secret instead of encrypting it here.
+   *
+   * This WIDENS the trust boundary — the platform can then read the secret —
+   * so it is opt-in and the orchestrator gates it on the ADMIN tenant role.
+   * It is also the only kind of secret a capability "use" grant can serve:
+   * a zero-knowledge secret can never back one.
+   */
+  server_side?: boolean;
 }
 
 export interface UpdateSecretInput {
@@ -250,6 +296,113 @@ export const ipc = {
 
   applyUpdate: (channel: UpdaterChannel) =>
     invoke<ApplyUpdateResult>("vault_apply_update", { channel }),
+
+  // ── Audit hash chain (tamper-evidence) ─────────────────────────────────
+  // The chain is a per-tenant hash chain: each entry commits to its own
+  // content and to the previous entry's hash. `getAuditChain` reports the
+  // posture and the segments; `verifyAuditChain` re-hashes and reports the
+  // first entry that does not verify.
+  //
+  // IMPORTANT: the server answers 200 whether or not the chain verified — a
+  // break is a security finding, not a client error. So the caller must
+  // inspect `intact`, not treat a resolved promise as a clean audit.
+  getAuditChain: () =>
+    invoke<AuditChainStatus>("get_audit_chain"),
+
+  verifyAuditChain: (window?: number) =>
+    invoke<AuditChainVerifyResult>("verify_audit_chain", { window }),
+
+  // ── Capability grants ─────────────────────────────────────────────────
+  // A capability request asks for scoped access to a secret. Only a
+  // PLATFORM-HELD secret can back one: a zero-knowledge secret has no
+  // ciphertext the broker could deliver.
+  listCapabilities: () =>
+    invoke<Record<string, unknown>>("list_capabilities"),
+  approveCapability: (id: string) =>
+    invoke<Record<string, unknown>>("approve_capability", { id }),
+  denyCapability: (id: string) =>
+    invoke<Record<string, unknown>>("deny_capability", { id }),
+  revokeCapability: (id: string) =>
+    invoke<Record<string, unknown>>("revoke_capability", { id }),
+
+  /** Whether the platform can resolve this secret's plaintext. */
+  getSecretPresence: (id: string) =>
+    invoke<SecretPresence>("get_secret_presence", { id }),
+
+  // ── Tenant vault MFA ──────────────────────────────────────────────────
+  // The MFA code travels in a header, never in a query string.
+  getMfaConfig: () => invoke<MfaConfig>("get_mfa_config"),
+  verifyMfa: (code: string) => invoke<MfaVerifyResult>("verify_mfa", { code }),
+
+  // ── Dynamic credentials ───────────────────────────────────────────────
+  createDynamicTarget: (input: CreateDynamicTargetInput) =>
+    invoke<Record<string, unknown>>("create_dynamic_target", { input }),
+  listDynamicTargets: () =>
+    invoke<Record<string, unknown>>("list_dynamic_targets"),
+  deleteDynamicTarget: (id: string) =>
+    invoke<void>("delete_dynamic_target", { id }),
+  testDynamicTarget: (id: string) =>
+    invoke<Record<string, unknown>>("test_dynamic_target", { id }),
+
+  createDynamicCredential: (input: CreateDynamicCredentialInput) =>
+    invoke<Record<string, unknown>>("create_dynamic_credential", { input }),
+  listDynamicCredentials: () =>
+    invoke<Record<string, unknown>>("list_dynamic_credentials"),
+  /** Mints a live credential. The response carries the plaintext once. */
+  generateDynamicCredential: (id: string, ttlSeconds?: number) =>
+    invoke<GeneratedCredential>("generate_dynamic_credential", {
+      id,
+      ttlSeconds,
+    }),
+  revokeDynamicCredential: (id: string) =>
+    invoke<void>("revoke_dynamic_credential", { id }),
+  renewLease: (credentialId: string, leaseId: string, ttlSeconds?: number) =>
+    invoke<Record<string, unknown>>("renew_lease", {
+      credentialId,
+      leaseId,
+      ttlSeconds,
+    }),
+  revokeLease: (credentialId: string, leaseId: string) =>
+    invoke<void>("revoke_lease", { credentialId, leaseId }),
+
+  // ── Sharing and federation ────────────────────────────────────────────
+  shareSecret: (input: ShareSecretInput) =>
+    invoke<Record<string, unknown>>("share_secret", { input }),
+  listSharedSecrets: () => invoke<Record<string, unknown>>("list_shared_secrets"),
+  revokeShare: (shareId: string) => invoke<void>("revoke_share", { shareId }),
+
+  listFederationKeys: () => invoke<Record<string, unknown>>("list_federation_keys"),
+  createFederationKey: (input: CreateFederationKeyInput) =>
+    invoke<Record<string, unknown>>("create_federation_key", { input }),
+
+  // ── Import / export (metadata only) ───────────────────────────────────
+  // The export carries secret METADATA — never a ciphertext, never a
+  // plaintext. The file is written by the Rust core so the webview never
+  // needs a filesystem capability.
+  //
+  // Neither command takes a path. The core opens the native file dialog
+  // and the user picks the location, so a compromised renderer cannot
+  // direct the core at an arbitrary file.
+  exportSecrets: () => invoke<SecretExportResult>("export_secrets"),
+  readSecretExport: () =>
+    invoke<SecretExportSummary>("read_secret_export"),
+
+  // ── Offline metadata cache ────────────────────────────────────────────
+  // The cache holds secret METADATA only — never a ciphertext, never a
+  // plaintext. It lets the app show what you have while the orchestrator
+  // is unreachable.
+  readMetadataCache: () =>
+    invoke<MetadataCacheResult>("read_metadata_cache"),
+  clearMetadataCache: () => invoke<void>("clear_metadata_cache"),
+
+  // ── Idle auto-lock ────────────────────────────────────────────────────
+  // The countdown lives in the Rust core; the webview only reports
+  // activity. A compromised renderer cannot suppress the timer by simply
+  // not running it.
+  reportActivity: () => invoke<void>("report_activity"),
+  getIdleSettings: () => invoke<IdleSettings>("get_idle_settings"),
+  setIdleSettings: (timeoutSeconds: number) =>
+    invoke<IdleSettings>("set_idle_settings", { timeoutSeconds }),
 } as const;
 
 // ── Input shapes ────────────────────────────────────────────────────────

@@ -55,6 +55,8 @@ export function SecretEditor({ mode, id, initial, onClose, onSaved }: Props) {
   const [scopes, setScopes] = useState((initial?.scopes ?? []).join(", "));
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
+  // Ask the platform to hold the value instead of encrypting it here.
+  const [serverSide, setServerSide] = useState(false);
 
   const creating = mode === "create";
 
@@ -85,6 +87,7 @@ export function SecretEditor({ mode, id, initial, onClose, onSaved }: Props) {
           plaintext,
           namespace: namespace.trim(),
           scopes: splitScopes(scopes),
+          server_side: serverSide,
         });
       } else {
         if (!id) throw new Error("missing secret id");
@@ -219,10 +222,28 @@ export function SecretEditor({ mode, id, initial, onClose, onSaved }: Props) {
                 spellCheck={false}
               />
               <p className="mt-1 text-[11px] text-neutral-500 dark:text-neutral-400">
-                Encrypted in the desktop core with your unlock passphrase
-                before it is sent. The orchestrator stores ciphertext only.
+                {serverSide
+                  ? "The platform encrypts this value with the tenant's data-encryption key. It CAN read the value — and it is the only kind of secret a capability grant can serve."
+                  : "Encrypted in the desktop core with your unlock passphrase before it is sent. The orchestrator stores ciphertext only."}
               </p>
             </div>
+          )}
+
+          {creating && (
+            <label className="flex items-start gap-2 text-xs text-neutral-600 dark:text-neutral-300">
+              <input
+                type="checkbox"
+                checked={serverSide}
+                onChange={(e) => setServerSide(e.target.checked)}
+                className="mt-0.5"
+              />
+              <span>
+                <strong>Hold this secret in the platform.</strong>{" "}
+                Widens the trust boundary — the platform can read the value.
+                Required for capability grants and for sharing with other
+                tenant members. Requires the admin role.
+              </span>
+            </label>
           )}
 
           {!creating && (

@@ -26,6 +26,8 @@ export interface AppErrorShape {
     | "invalid_input"
     | "storage"
     | "transport"
+    | "platform_held"
+    | "cancelled"
     | "unknown";
   message: string;
 }

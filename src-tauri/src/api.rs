@@ -226,6 +226,13 @@ struct MeResponse {
     role: Option<String>,
 }
 
+/// One extra header to attach to a request beyond the bearer and CSRF
+/// tokens.
+struct ExtraHeader {
+    name: String,
+    value: String,
+}
+
 /// Shared client state. `Arc`'d into Tauri state.
 pub struct VaultClient {
     http: reqwest::Client,
@@ -572,7 +579,30 @@ impl VaultClient {
         query: &[(&str, String)],
         body: Option<serde_json::Value>,
     ) -> Result<T, ApiError> {
-        self.request_inner(method, path, query, body, false).await
+        self.request_inner(method, path, query, body, false, None)
+            .await
+    }
+
+    /// Performs a request with one extra header attached.
+    ///
+    /// Used for `X-MFA-Code`: the orchestrator's vault MFA handler reads the
+    /// code from that header and deliberately refuses a query parameter,
+    /// because proxies log query strings.
+    pub async fn request_with_header<T: serde::de::DeserializeOwned>(
+        &self,
+        method: reqwest::Method,
+        path: &str,
+        query: &[(&str, String)],
+        body: Option<serde_json::Value>,
+        header_name: &str,
+        header_value: &str,
+    ) -> Result<T, ApiError> {
+        let extra = ExtraHeader {
+            name: header_name.to_string(),
+            value: header_value.to_string(),
+        };
+        self.request_inner(method, path, query, body, false, Some(extra))
+            .await
     }
 
     async fn request_inner<T: serde::de::DeserializeOwned>(
@@ -582,6 +612,7 @@ impl VaultClient {
         query: &[(&str, String)],
         body: Option<serde_json::Value>,
         is_retry: bool,
+        extra_header: Option<ExtraHeader>,
     ) -> Result<T, ApiError> {
         let base = self.require_base().await?;
         let token = self.require_token().await?;
@@ -614,6 +645,10 @@ impl VaultClient {
             req = req.json(b);
         }
 
+        if let Some(ref h) = extra_header {
+            req = req.header(&h.name, &h.value);
+        }
+
         let resp = req
             .send()
             .await
@@ -625,7 +660,19 @@ impl VaultClient {
             // The documented CSRF failure signature; refetch once and retry.
             if text.contains("csrf_token_invalid") {
                 self.csrf_token(true).await?;
-                return Box::pin(self.request_inner::<T>(method, path, query, body, true)).await;
+                // Boxed to break the async recursion: `request_inner` calls
+                // itself, so the future would otherwise be infinitely sized.
+                // The `.await` goes OUTSIDE the `Box::pin`, so the returned
+                // value is the `Result`, not the `Pin`.
+                return Box::pin(self.request_inner::<T>(
+                    method,
+                    path,
+                    query,
+                    body,
+                    true,
+                    extra_header,
+                ))
+                .await;
             }
             return Err(classify(403, &text));
         }

@@ -23,6 +23,7 @@ use base64::Engine;
 use serde::{Deserialize, Serialize};
 
 use aes_gcm::aead::{Aead, KeyInit};
+use argon2::{Algorithm, Argon2, Params, Version};
 use sha2::Sha256;
 
 /// PBKDF2 iteration counts. MUST match vault-crypto.ts exactly.
@@ -37,11 +38,28 @@ pub const AUTH_TAG_LENGTH: usize = 16; // GCM tag size
 pub const CURRENT_KEY_VERSION: i64 = 2;
 pub const LEGACY_KEY_VERSION: i64 = 1;
 
+/// Argon2id envelope version.
+///
+/// The orchestrator's client-wrap path stamps this version on Argon2id
+/// envelopes (`internal/storage/vault/client_crypto.go`), and the Go SDK
+/// ships the same OWASP 2023 parameters (`sdk/go-vault-sdk/vault/kdf.go`).
+/// It is ADDITIVE: versions 1 and 2 keep their exact PBKDF2 meaning, so
+/// everything the dashboard or the other SDKs wrote stays readable.
+pub const ARGON2_KEY_VERSION: i64 = 3;
+
+/// Argon2id cost parameters. MUST match `DefaultArgon2Params()` in the Go
+/// SDK: 64 MiB, 3 iterations, 4 lanes, 32-byte key.
+pub const ARGON2_MEMORY_KIB: u32 = 64 * 1024;
+pub const ARGON2_ITERATIONS: u32 = 3;
+pub const ARGON2_PARALLELISM: u32 = 4;
+/// Argon2id's minimum salt is 8 bytes; the client always uses 16.
+pub const ARGON2_SALT_LENGTH: usize = 16;
+
 /// Errors surfaced to the UI. Deliberately coarse: decryption failures must
 /// not tell an attacker whether the salt was wrong or the tag was forged.
 #[derive(Debug, thiserror::Error)]
 pub enum CryptoError {
-    #[error("unsupported key_version {0} (this client supports 1 and 2)")]
+    #[error("unsupported key_version {0} (this client supports 1, 2 and 3)")]
     UnsupportedKeyVersion(i64),
     #[error("missing salt: cannot derive key")]
     MissingSalt,
@@ -55,21 +73,60 @@ pub enum CryptoError {
     Random(String),
 }
 
-/// Resolves the PBKDF2 iteration count for a payload, rejecting unknown
+/// Derives the AES key for a payload's `key_version`, rejecting unknown
 /// versions rather than silently defaulting to current.
-fn iterations_for_key_version(key_version: i64) -> Result<u32, CryptoError> {
+///
+/// Versions 1 and 2 are PBKDF2-HMAC-SHA256 at 100k and 600k iterations —
+/// byte-identical to what the dashboard and the Go/JS SDKs produce, so a
+/// value written by any of them round-trips through here.
+///
+/// Version 3 is Argon2id with the OWASP 2023 parameters.
+fn derive_key_for_version(
+    passphrase: &str,
+    salt: &[u8],
+    key_version: i64,
+) -> Result<[u8; KEY_LENGTH], CryptoError> {
     match key_version {
-        LEGACY_KEY_VERSION => Ok(PBKDF2_ITERATIONS_V1),
-        CURRENT_KEY_VERSION => Ok(PBKDF2_ITERATIONS_V2),
+        LEGACY_KEY_VERSION => Ok(derive_key(passphrase, salt, PBKDF2_ITERATIONS_V1)),
+        CURRENT_KEY_VERSION => Ok(derive_key(passphrase, salt, PBKDF2_ITERATIONS_V2)),
+        ARGON2_KEY_VERSION => derive_argon2id_key(passphrase, salt),
         other => Err(CryptoError::UnsupportedKeyVersion(other)),
     }
+}
+
+/// Derives a 32-byte AES key with Argon2id.
+///
+/// The parameters mirror `DefaultArgon2Params()` in the Go SDK
+/// (`sdk/go-vault-sdk/vault/kdf.go`): 64 MiB of memory, 3 iterations,
+/// 4 lanes. They MUST match, or a value sealed by one client cannot be
+/// opened by the other.
+fn derive_argon2id_key(passphrase: &str, salt: &[u8]) -> Result<[u8; KEY_LENGTH], CryptoError> {
+    if salt.len() < ARGON2_SALT_LENGTH {
+        return Err(CryptoError::Malformed(format!(
+            "argon2id salt must be at least {ARGON2_SALT_LENGTH} bytes, got {}",
+            salt.len()
+        )));
+    }
+    let params = Params::new(
+        ARGON2_MEMORY_KIB,
+        ARGON2_ITERATIONS,
+        ARGON2_PARALLELISM,
+        None,
+    )
+    .map_err(|e| CryptoError::Malformed(format!("argon2id params: {e}")))?;
+    let argon2 = Argon2::new(Algorithm::Argon2id, Version::V0x13, params);
+    let mut key = [0u8; KEY_LENGTH];
+    argon2
+        .hash_password_into(passphrase.as_bytes(), salt, &mut key)
+        .map_err(|e| CryptoError::Malformed(format!("argon2id derive: {e}")))?;
+    Ok(key)
 }
 
 /// The universal encrypted blob exchanged with the API.
 ///
 /// Mirrors `EncryptedDataPayload` in
 /// `internal/api/handlers/vault/types.go`.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Clone, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub struct EncryptedData {
     /// base64 of ciphertext ‖ auth_tag.
@@ -85,14 +142,27 @@ pub struct EncryptedData {
     pub key_version: i64,
 }
 
-/// Same as [`EncryptedData`] plus the plaintext type, for the reveal path.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub struct DecryptedSecret {
-    #[serde(flatten)]
-    pub encrypted: EncryptedData,
-    /// Never persisted, never logged, never sent back to the server.
-    pub plaintext: String,
+/// Deliberately NOT the derived `Debug`.
+///
+/// The ciphertext, the nonce and the salt are the whole offline-attack
+/// surface: anyone holding all three can mount an offline passphrase
+/// guess against the AES key without ever touching the vault. A derived
+/// `Debug` would print them verbatim into any log line, error report or
+/// `panic!` that happened to mention the payload.
+///
+/// So the derived formatting is replaced with one that reports only the
+/// SHAPE of the envelope — which version, and how long each field is.
+/// Nothing here helps an attacker.
+impl std::fmt::Debug for EncryptedData {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("EncryptedData")
+            .field("key_version", &self.key_version)
+            .field("ciphertext_len", &self.ciphertext.len())
+            .field("iv_len", &self.iv.len())
+            .field("salt_len", &self.salt.len())
+            .field("tag_len", &self.tag.len())
+            .finish()
+    }
 }
 
 impl EncryptedData {
@@ -157,18 +227,87 @@ pub fn encrypt(plaintext: &str, passphrase: &str) -> Result<EncryptedData, Crypt
     })
 }
 
-/// Decrypts a payload. Iterations are resolved from `key_version` so legacy
+/// Encrypts at an explicit `key_version`.
+///
+/// The default [`encrypt`] deliberately stays at v2 (PBKDF2 600k) because
+/// that is what the dashboard and the Go/JS SDKs read. This entry point
+/// exists for the v3 Argon2id envelope; it is never used by the ordinary
+/// "create a secret" path.
+pub fn encrypt_at_key_version(
+    plaintext: &str,
+    passphrase: &str,
+    key_version: i64,
+) -> Result<EncryptedData, CryptoError> {
+    let salt = random_bytes(SALT_LENGTH)?;
+    let iv = random_bytes(IV_LENGTH)?;
+    let key = derive_key_for_version(passphrase, &salt, key_version)?;
+    let sealed = aes_gcm_seal(&key, &iv, plaintext.as_bytes())?;
+    Ok(EncryptedData {
+        ciphertext: B64.encode(&sealed),
+        iv: B64.encode(&iv),
+        salt: B64.encode(&salt),
+        tag: String::new(),
+        key_version,
+    })
+}
+
+/// Generates a fresh 32-byte data-encryption key.
+///
+/// The DEK is the raw key material a tenant wraps under a key-encryption
+/// key ([`wrap_dek`]) and then uses to seal individual values without a
+/// KDF round-trip per secret.
+pub fn generate_dek() -> Result<Vec<u8>, CryptoError> {
+    random_bytes(KEY_LENGTH)
+}
+
+/// Seals a value directly under a raw DEK — the envelope's inner layer.
+///
+/// There is no KDF here: the DEK *is* the key. This is the byte-exact
+/// counterpart of `EncryptUnderDEK` in the Go SDK
+/// (`sdk/go-vault-sdk/vault/crypto.go`), including the empty salt and the
+/// `CurrentKeyVersion` stamp, so a value sealed here opens there.
+pub fn encrypt_under_dek(plaintext: &str, dek: &[u8]) -> Result<EncryptedData, CryptoError> {
+    if dek.len() != KEY_LENGTH {
+        return Err(CryptoError::Malformed(format!(
+            "DEK must be {KEY_LENGTH} bytes, got {}",
+            dek.len()
+        )));
+    }
+    let iv = random_bytes(IV_LENGTH)?;
+    let sealed = aes_gcm_seal(dek, &iv, plaintext.as_bytes())?;
+    Ok(EncryptedData {
+        ciphertext: B64.encode(&sealed),
+        iv: B64.encode(&iv),
+        // No KDF was applied, so there is no salt to record.
+        salt: String::new(),
+        tag: String::new(),
+        key_version: CURRENT_KEY_VERSION,
+    })
+}
+
+/// Opens a value sealed by [`encrypt_under_dek`].
+pub fn decrypt_under_dek(data: &EncryptedData, dek: &[u8]) -> Result<String, CryptoError> {
+    if dek.len() != KEY_LENGTH {
+        return Err(CryptoError::Malformed(format!(
+            "DEK must be {KEY_LENGTH} bytes, got {}",
+            dek.len()
+        )));
+    }
+    let data = data.normalized()?;
+    decrypt_inner(&data, dek)
+}
+
+/// Decrypts a payload. The KDF is resolved from `key_version`, so legacy
 /// v1 secrets remain readable.
 pub fn decrypt(data: &EncryptedData, passphrase: &str) -> Result<String, CryptoError> {
     let data = data.normalized()?;
     if data.salt.is_empty() {
         return Err(CryptoError::MissingSalt);
     }
-    let iterations = iterations_for_key_version(data.key_version)?;
     let salt = B64
         .decode(&data.salt)
         .map_err(|e| CryptoError::Malformed(format!("salt: {e}")))?;
-    let key = derive_key(passphrase, &salt, iterations);
+    let key = derive_key_for_version(passphrase, &salt, data.key_version)?;
     decrypt_inner(&data, &key)
 }
 
@@ -427,6 +566,116 @@ mod tests {
     #[test]
     fn dek_wrap_rejects_wrong_length_dek() {
         assert!(wrap_dek(&[0u8; 16], "kek", &B64.encode([0u8; 16])).is_err());
+    }
+
+    // ── key_version 3 (Argon2id) ──────────────────────────────────────────
+
+    #[test]
+    fn argon2id_envelope_roundtrips() {
+        let enc = encrypt_at_key_version("argon2 secret", "pw", ARGON2_KEY_VERSION).unwrap();
+        assert_eq!(enc.key_version, ARGON2_KEY_VERSION);
+        assert!(enc.tag.is_empty(), "inline-tag layout leaves tag empty");
+        assert_eq!(decrypt(&enc, "pw").unwrap(), "argon2 secret".to_string());
+    }
+
+    #[test]
+    fn argon2id_envelope_fails_closed_on_the_wrong_passphrase() {
+        let enc = encrypt_at_key_version("argon2 secret", "right", ARGON2_KEY_VERSION).unwrap();
+        assert!(matches!(
+            decrypt(&enc, "wrong"),
+            Err(CryptoError::DecryptFailed)
+        ));
+    }
+
+    #[test]
+    fn argon2id_parameters_match_the_go_sdk() {
+        // `DefaultArgon2Params()` in `sdk/go-vault-sdk/vault/kdf.go`:
+        // memory 64 MiB, iterations 3, parallelism 4, key 32 bytes,
+        // salt 16 bytes. If these drift, a value sealed by one client
+        // cannot be opened by the other.
+        assert_eq!(ARGON2_MEMORY_KIB, 65_536);
+        assert_eq!(ARGON2_ITERATIONS, 3);
+        assert_eq!(ARGON2_PARALLELISM, 4);
+        assert_eq!(KEY_LENGTH, 32);
+        assert_eq!(ARGON2_SALT_LENGTH, 16);
+    }
+
+    #[test]
+    fn argon2id_support_does_not_change_v1_or_v2() {
+        // The default writer must still emit v2 PBKDF2 — that is what the
+        // dashboard and the Go/JS SDKs read. Adding v3 must not shift it.
+        let enc = encrypt("interop", "pw").unwrap();
+        assert_eq!(enc.key_version, CURRENT_KEY_VERSION);
+        assert_eq!(decrypt(&enc, "pw").unwrap(), "interop".to_string());
+
+        // And a legacy v1 payload must still open.
+        let salt = random_bytes(SALT_LENGTH).unwrap();
+        let key = derive_key("legacy-pw", &salt, PBKDF2_ITERATIONS_V1);
+        let iv = random_bytes(IV_LENGTH).unwrap();
+        let sealed = aes_gcm_seal(&key, &iv, b"old secret").unwrap();
+        let v1 = EncryptedData {
+            ciphertext: B64.encode(&sealed),
+            iv: B64.encode(&iv),
+            salt: B64.encode(&salt),
+            tag: String::new(),
+            key_version: LEGACY_KEY_VERSION,
+        };
+        assert_eq!(decrypt(&v1, "legacy-pw").unwrap(), "old secret");
+    }
+
+    #[test]
+    fn argon2id_rejects_a_short_salt() {
+        let salt = random_bytes(8).unwrap();
+        assert!(matches!(
+            derive_argon2id_key("pw", &salt),
+            Err(CryptoError::Malformed(_))
+        ));
+    }
+
+    // ── DEK envelope (encrypt under a raw DEK) ───────────────────────────
+
+    #[test]
+    fn dek_envelope_roundtrips() {
+        let dek = generate_dek().unwrap();
+        let enc = encrypt_under_dek("under dek", &dek).unwrap();
+        // Matches `EncryptUnderDEK` in the Go SDK: no salt, no detached tag.
+        assert!(enc.salt.is_empty(), "a DEK envelope records no KDF salt");
+        assert!(enc.tag.is_empty());
+        assert_eq!(enc.key_version, CURRENT_KEY_VERSION);
+        assert_eq!(
+            decrypt_under_dek(&enc, &dek).unwrap(),
+            "under dek".to_string()
+        );
+    }
+
+    #[test]
+    fn dek_envelope_rejects_the_wrong_dek() {
+        let dek = generate_dek().unwrap();
+        let other = generate_dek().unwrap();
+        let enc = encrypt_under_dek("under dek", &dek).unwrap();
+        assert!(matches!(
+            decrypt_under_dek(&enc, &other),
+            Err(CryptoError::DecryptFailed)
+        ));
+    }
+
+    #[test]
+    fn dek_envelope_rejects_a_wrong_length_dek() {
+        let enc = encrypt_under_dek("x", &generate_dek().unwrap()).unwrap();
+        assert!(matches!(
+            decrypt_under_dek(&enc, &[0u8; 16]),
+            Err(CryptoError::Malformed(_))
+        ));
+        assert!(encrypt_under_dek("x", &[0u8; 16]).is_err());
+    }
+
+    #[test]
+    fn generated_deks_are_32_bytes_and_unique() {
+        let a = generate_dek().unwrap();
+        let b = generate_dek().unwrap();
+        assert_eq!(a.len(), KEY_LENGTH);
+        assert_eq!(b.len(), KEY_LENGTH);
+        assert_ne!(a, b);
     }
 
     #[test]
