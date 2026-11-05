@@ -127,11 +127,12 @@ need() {
   }
 }
 
-HAVE_BUN=0; HAVE_CARGO=0; HAVE_PYTHON=0; HAVE_GH=0
+HAVE_BUN=0; HAVE_CARGO=0; HAVE_PYTHON=0; HAVE_GH=0; HAVE_ZIG=0
 command -v bun    >/dev/null 2>&1 && HAVE_BUN=1
 command -v cargo  >/dev/null 2>&1 && HAVE_CARGO=1
 command -v python3 >/dev/null 2>&1 && HAVE_PYTHON=1
 command -v gh     >/dev/null 2>&1 && HAVE_GH=1
+command -v zig    >/dev/null 2>&1 && HAVE_ZIG=1
 
 # ── Job: frontend ───────────────────────────────────────────────────────
 job_frontend() {
@@ -263,6 +264,39 @@ job_release_scripts() {
     bash scripts/release/check-signing-readiness.sh
 }
 
+# ── Job: macos ─────────────────────────────────────────────────────────
+# Type-checks the macOS build on a Linux host. This is a COMPILE GATE,
+# not a build: it cannot produce a .app or a .dmg. It exists because the
+# release workflow's `macos-latest` job cannot start while the
+# organisation's GitHub billing is unsettled, so without it a macOS-only
+# compile error would go unnoticed.
+#
+# It is skipped (not failed) when zig is not installed, because zig is a
+# third-party toolchain that not every CI host has. The skip is
+# reported explicitly — a silent skip that reads as "ok" is the worst
+# possible outcome.
+job_macos() {
+  banner "macos (compile gate — not a build)"
+  if [[ $HAVE_CARGO -eq 0 ]]; then
+    echo "${C_YEL}  cargo not found — skipping${C_OFF}"
+    record macos skip "toolchain missing"
+    return 0
+  fi
+  if [[ $HAVE_ZIG -eq 0 ]]; then
+    for c in "$HOME/.local/zig/zig" /opt/zig/zig /usr/local/bin/zig; do
+      [[ -x "$c" ]] && export ZIG_BIN="$c" && break
+    done
+  fi
+  if [[ -z "${ZIG_BIN:-}" ]]; then
+    echo "${C_YEL}  zig not found — skipping${C_OFF}"
+    echo "      install it from https://ziglang.org/download/ to enable this gate"
+    record macos skip "zig not installed"
+    return 0
+  fi
+  run_step macos "cargo check --target aarch64-apple-darwin" \
+    bash scripts/macos-typecheck.sh
+}
+
 # ── Parity check against ci.yml ─────────────────────────────────────────
 job_check_parity() {
   banner "parity with .github/workflows/ci.yml"
@@ -288,7 +322,8 @@ job_check_parity() {
         "scripts/release/publish-update.test.sh" \
         "scripts/release/verify-updater-keypair.sh" \
         "scripts/release/check-signing-readiness.sh" \
-        "scripts/staging-smoke.test.sh"; do
+        "scripts/staging-smoke.test.sh" \
+        "scripts/macos-typecheck.sh"; do
         if ! grep -qF "$probe" "$yml"; then
           echo "::error::${probe} is not in ${yml} but the portable runner runs it."
           missing=1
@@ -363,7 +398,7 @@ report_to_github() {
 }
 
 # ── Run ─────────────────────────────────────────────────────────────────
-JOBS=(frontend rust build release_scripts)
+JOBS=(frontend rust build release_scripts macos)
 
 echo "FunctionFly Vault — portable CI runner"
 echo "repo:   $REPO_ROOT"

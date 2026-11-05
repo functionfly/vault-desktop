@@ -128,6 +128,56 @@ jobs:
           cargo test --test keychain_smoke
           cargo test --test published_artifact_contract
 
+  # ── macOS compile gate ────────────────────────────────────────────────────
+  # Type-checks the macOS build on a Linux runner.
+  #
+  # This is a COMPILE GATE, not a build: it produces no .app and no .dmg.
+  # It exists because the `macos-latest` job in the build matrix below
+  # cannot start while the organisation's GitHub billing is unsettled.
+  # Without this gate, a macOS-only compile error would sit unnoticed
+  # until a macOS runner finally exists.
+  #
+  # It needs `zig` (which bundles the macOS libc headers and emits
+  # Mach-O objects) and LLVM's `llvm-install-name-tool` (which CMake
+  # demands as soon as CMAKE_SYSTEM_NAME=Darwin). See
+  # scripts/macos-typecheck.sh for the full explanation.
+  macos:
+    name: macos (compile gate)
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri
+
+      - name: Install zig
+        # Zig bundles the macOS libc headers, so `zig cc` can compile the
+        # C dependencies (ring, aws-lc-sys) for macOS on Linux.
+        run: |
+          ZIG_VERSION=0.17.1
+          curl -sSL --max-time 600 \
+            "https://ziglang.org/download/${ZIG_VERSION}/zig-x86_64-linux-${ZIG_VERSION}.tar.xz" \
+            -o /tmp/zig.tar.xz
+          mkdir -p "$HOME/.local"
+          tar -xJf /tmp/zig.tar.xz -C "$HOME/.local" --strip-components=1
+          mv "$HOME/.local/zig-x86_64-linux-${ZIG_VERSION}" "$HOME/.local/zig"
+          echo "$HOME/.local/zig" >> "$GITHUB_PATH"
+
+      - name: Install LLVM
+        # llvm-install-name-tool is LLVM's build of Apple's
+        # install_name_tool. CMake requires it for a Darwin build.
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y llvm-18 cmake
+          echo "/usr/lib/llvm-18/bin" >> "$GITHUB_PATH"
+
+      - name: macOS compile gate
+        run: bash scripts/macos-typecheck.sh
+
   # ── Cross-platform compile matrix ─────────────────────────────────────────
   # Proves the crate compiles and the webview bundles on every shipping OS.
   build:

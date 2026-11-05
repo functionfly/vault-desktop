@@ -3,6 +3,40 @@
 All notable changes to FunctionFly Vault Desktop are recorded here. The
 project follows [Semantic Versioning](https://semver.org/).
 
+## [Unreleased]
+
+### Added
+
+- **A macOS compile gate.** `scripts/macos-typecheck.sh` type-checks the
+  `aarch64-apple-darwin` build on a Linux host, so a macOS-only compile
+  error is caught without waiting for a macOS runner. It cross-compiles
+  with `zig cc` (which bundles the macOS libc headers and emits Mach-O
+  objects) and LLVM's `llvm-install-name-tool` (which CMake requires for
+  a Darwin build). It is a **compile gate, not a build**: it produces no
+  `.app` and no `.dmg`, because that needs the Apple SDK, the Tauri macOS
+  bundler and an Apple Developer ID certificate. It runs as a job in the
+  portable CI runner and in `ci.yml`, and it skips itself with an
+  explicit notice on a host without zig — a silent skip that reads as
+  "ok" is the worst possible outcome.
+
+  The gate was verified to actually catch errors: a deliberate compile
+  error inside a `cfg(target_os = "macos")` block fails the gate, and
+  the gate passes again once the error is reverted.
+
+### Fixed
+
+- **The README's status block was stale.** It reported `v1.0.0` when the
+  shipped release is `v1.0.1`, and claimed 125 Rust tests and 103
+  vitest where the real counts are 129 and 105. The published-artefact
+  contract suite was not mentioned at all.
+
+### Changed
+
+- The README now states plainly that there is **no macOS installer**,
+  why (the release workflow's `macos-latest` job cannot start while the
+  organisation's GitHub billing is unsettled), and that the Ed25519
+  updater signature is not a platform vendor signature.
+
 ## [1.0.1] — 2026-11-04
 
 ### Fixed
