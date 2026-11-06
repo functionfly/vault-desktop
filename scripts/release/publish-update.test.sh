@@ -711,8 +711,19 @@ if [[ -n "${MOCK_R2_STORE:-}" ]] && command -v python3 >/dev/null 2>&1 && comman
   MOCK_PID=$!
   # Note: $MOCK_PID must be expanded at trap-registration time (single quotes).
   trap 'kill "$MOCK_PID" 2>/dev/null || true; rm -rf "$FIXTURE_DIR"' EXIT
-  # Wait for the mock to start listening
-  for _ in 1 2 3 4 5 6 7 8 9 10; do
+  # Wait for the mock to start listening.
+  #
+  # The budget was 10 x 0.2s = 2s, which is not enough when the host is
+  # busy: the mock is a Python process that has to be scheduled before it
+  # can even begin importing, so on a loaded machine (a CI host running a
+  # Rust release build with LTO in parallel) it can take several seconds
+  # to answer the first health check. A timeout here does not fail the
+  # test cleanly either — it leaves the mock unstarted, and the publish
+  # below then fails for a reason that has nothing to do with the code
+  # under test.
+  #
+  # 150 x 0.2s = 30s, matching the budget in scripts/staging-smoke.test.sh.
+  for _ in $(seq 1 150); do
     if curl -s -o /dev/null "http://127.0.0.1:${MOCK_PORT}/healthcheck" 2>/dev/null; then
       break
     fi

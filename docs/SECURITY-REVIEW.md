@@ -1,6 +1,10 @@
 # STRIDE review — FunctionFly Vault Desktop v1.0.0
 
 **Reviewed:** 2026-11-04
+**Amended:** 2026-11-05 — added *Dependency advisories* (the `rustls`
+0.23.46 upgrade and the accepted `glib` advisory), and corrected the
+*Residual risks* row about branch protection, which had been written
+before the protection was enabled.
 **Scope:** the Tauri IPC surface (webview → Rust core), the capability
 manifest, the crypto module, the store, and the updater contract.
 **Reviewer:** engineering (pre-launch pass, release blocker for 1.0.0)
@@ -196,6 +200,40 @@ to read is not evidence that it holds something else. Verified correct.
 
 ---
 
+## Dependency advisories
+
+A STRIDE review of the IPC surface says nothing about the crates the
+core is built on. This section records the triage of the advisories
+GitHub's dependency scanner reports against this repository, so that a
+future reader can tell a *triaged* advisory from an *ignored* one.
+
+### Resolved
+
+| Advisory | Severity | Crate | Resolution |
+| --- | --- | --- | --- |
+| `GHSA-vp88-798v-h67f` | low | `rustls` | Fixed in 0.23.46; upgraded from 0.23.45. |
+| `GHSA-w44r-93j7-qv28` | low | `rustls` | Fixed in 0.23.46; upgraded from 0.23.45. |
+| `GHSA-c8m5-c952-6cm4` | medium | `rustls` | Fixed in 0.23.46; upgraded from 0.23.45. |
+| `GHSA-h2v8-394m-p7vv` | low | `rustls` | Fixed in 0.23.46; upgraded from 0.23.45. |
+
+`rustls` is a transitive dependency — it arrives through `reqwest` and
+`hyper-rustls`, not through a direct entry in `Cargo.toml`. The upgrade
+is therefore a `Cargo.lock` change only.
+
+### Accepted
+
+| Advisory | Severity | Crate | Why it is accepted |
+| --- | --- | --- | --- |
+| `GHSA-wrw7-89jp-8q8g` | medium | `glib` | Unsoundness in the `Iterator` / `DoubleEndedIterator` impls for `glib::VariantStrIter`. The fix landed in the `gtk-rs-core` tree after the 0.18.x line was frozen; crates.io's newest 0.18.x release is 0.18.5 and there is no 0.18.x release carrying the fix, so there is no in-range upgrade — bumping to `glib` 0.22 would drag the whole GTK stack forward and is not a lockfile change. **Scope:** `glib` reaches this project only through Tauri's GTK / `webkit2gtk` dependencies, which Tauri gates behind `cfg(any(target_os = "linux", "dragonfly", "freebsd", "openbsd", "netbsd"))`. macOS uses `objc2-web-kit` (WKWebView) and Windows uses `webview2-com` (WebView2), so `glib` is **not in the Windows or macOS dependency graphs** and those installers do not contain the crate. It **is** in the Linux graph, so the shipped AppImage and `.deb` do contain `glib` 0.18.5. The vulnerable code path is `glib::VariantStrIter`, a GVariant string iterator that the vault core never calls — the core does not use GLib, GObject or GVariant at all; they are pulled in transitively by the GTK toolkit. A future `glib` 0.18.x release carrying the fix, or a Tauri bump that moves the GTK stack to a fixed line, closes this without any action here. |
+
+> The scanner reports this advisory with an empty vulnerable range and no
+> patched version, because the fix was merged upstream rather than
+> released into the affected line. The empty range is a property of the
+> advisory record, not evidence that the crate is affected — the
+> advisory was checked by hand against the locked version.
+
+---
+
 ## Residual risks
 
 These are accepted for 1.0.0, with reasons.
@@ -207,7 +245,7 @@ These are accepted for 1.0.0, with reasons.
 | **The orchestrator sees ciphertext and metadata.** | That is the zero-knowledge design. Metadata leakage (secret names, namespaces, rotation times) is inherent to a centrally-indexed vault. |
 | **The unlock passphrase derives the key directly.** | No wrapping key, no hardware-backed key. An attacker with both the ciphertext and the passphrase has the secret. Argon2id (v3) raises the cost of an offline guess; a passphrase-based unlock is the product's deliberate simplicity trade. |
 | **The audit chain may be unkeyed.** | The chain panel distinguishes keyed (tamper-evident) from unkeyed (corruption detection only) and never claims more than the server reports. A tenant that needs tamper-evidence must configure the chain key server-side. |
-| **No branch protection.** | The GitHub free plan rejects it for private repositories. Manual review is the only merge gate today. |
+| **Branch protection is on, but its gate is a self-reported status.** | `main` and `develop` require one approving review from a code owner, a passing `portable CI` status, no force pushes and no deletions, with admins included. The `portable CI` status is published by the portable runner itself — the commit-status API is keyed on a SHA, and a status for one SHA does nothing for another, so the promotion run publishes against the exact commit that becomes the branch tip. The gate is therefore only as trustworthy as the runner that publishes it. |
 | **GitHub Actions is down org-wide.** | The release pipeline cannot run in CI. It is executed by hand from the build host, which is slower and less reproducible. |
 
 ---

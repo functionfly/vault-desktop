@@ -25,6 +25,26 @@ project follows [Semantic Versioning](https://semver.org/).
 
 ### Fixed
 
+- **The release self-tests could fail on a busy build host.** Both
+  `scripts/staging-smoke.test.sh` and
+  `scripts/release/publish-update.test.sh` start a Python mock and then
+  wait for it to come up — by polling its log for the `LISTENING` line,
+  and by polling a health check respectively. The budgets were 10
+  seconds and 2 seconds.
+
+  That is not enough when the host is busy. The mock has to be scheduled
+  before it can start importing, so a machine running a Rust release
+  build with LTO in parallel can leave it waiting well past two seconds.
+  The failure was also a misleading one: `staging-smoke.test.sh`
+  reported *"the mock never reported a port"* with an **empty** log,
+  which reads like a broken mock rather than a slow start. It failed the
+  portable CI run on 2026-11-05 that way, while the same script passed
+  when run on its own.
+
+  Both budgets are now 30 seconds. The waits stay bounded, and the
+  "the mock died on startup" branch still separates a crash from a slow
+  start.
+
 - **The README's status block was stale.** It reported `v1.0.0` when the
   shipped release is `v1.0.1`, and claimed 125 Rust tests and 103
   vitest where the real counts are 129 and 105. The published-artefact
@@ -41,6 +61,49 @@ project follows [Semantic Versioning](https://semver.org/).
   portable CI run on 2026-11-05 with 10.96 s. The measurement now
   excludes the warm-up and covers the second construction, which is the
   one a future blocking-call refactor would break.
+
+### Security
+
+- **rustls was upgraded from 0.23.45 to 0.23.46**, clearing four open
+  advisories that GitHub's dependency scanner had flagged against the
+  shipped binaries:
+
+  | Advisory | Severity | Issue |
+  | --- | --- | --- |
+  | `GHSA-vp88-798v-h67f` | low | Buffered application data was sent to the server even when the server rejected an Encrypted Client Hello, before the `ech_required` alert |
+  | `GHSA-w44r-93j7-qv28` | low | An unauthenticated `ServerHello` could poison the per-name key-exchange record |
+  | `GHSA-c8m5-c952-6cm4` | medium | `Debug` formatting of a client session value exposed the TLS 1.2 master secret or the TLS 1.3 resumption PSK |
+  | `GHSA-h2v8-394m-p7vv` | low | The (disabled-by-default) Brotli certificate decoder could be made to allocate up to 1 GiB before authentication |
+
+  0.23.46 is the release that carries all four fixes. The bump is a
+  lockfile-only change to a transitive dependency — `rustls` is not a
+  direct dependency, it arrives through `reqwest`/`hyper-rustls` — so no
+  source file changed and no API surface moved. The upstream release
+  also credits fixes submitted by OpenAI's outbound-disclosure
+  programme.
+
+  Two of the four were reachable in principle: the master-secret leak
+  only through a custom session store that logs `Debug` output (the
+  app uses the built-in cache, and the built-in diagnostics stay
+  redacted), and the ECH ordering bug only when ECH is configured and
+  the server rejects it. The Brotli decoder is off by default. The
+  key-exchange-record poisoning needs an active network attacker. None
+  of them are exploitable against the shipped build, but shipping a
+  dependency with a known, fixed advisory is a different posture from
+  shipping one with an open one, so the upgrade was made rather than
+  the alerts dismissed.
+
+  The fifth alert, `GHSA-wrw7-89jp-8q8g` (medium, unsoundness in
+  `glib::VariantStrIter`), is **accepted rather than fixed**: the fix
+  was merged into the `gtk-rs-core` tree after the 0.18.x line was
+  frozen, so there is no in-range upgrade to take. `glib` reaches this
+  project only through Tauri's GTK stack, which Tauri gates behind
+  `cfg(any(target_os = "linux", …))` — so it is absent from the Windows
+  and macOS dependency graphs, but it **is** in the Linux graph and the
+  shipped AppImage and `.deb` contain it. The vault core calls none of
+  the affected API, and the GTK stack is not a path this application
+  exercises. The reasoning is written up in
+  [`docs/SECURITY-REVIEW.md`](docs/SECURITY-REVIEW.md#dependency-advisories).
 
 ### Changed
 

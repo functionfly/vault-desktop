@@ -73,8 +73,22 @@ python3 "$MOCK" --port 0 > "$MOCK_LOG" 2>&1 &
 MOCK_PID=$!
 
 # Wait for the mock to announce its port.
+#
+# The budget here was 50 x 0.2s = 10s, which is not enough when the host
+# is busy. The mock is a Python process that has to be SCHEDULED before
+# it can even start importing `http.server`, so on a loaded machine
+# (a CI host running a Rust release build with LTO in parallel) the
+# interpreter can take more than ten seconds to reach its first line.
+#
+# That failure reads as "the mock never reported a port" with an EMPTY
+# log — no traceback, no error — which looks like a broken mock rather
+# than a slow start. It failed the portable CI run on 2026-11-05 that
+# way, while the same script passed when run on its own.
+#
+# 150 x 0.2s = 30s. The wait is still bounded, and the "the mock died on
+# startup" branch below still distinguishes a crash from a slow start.
 PORT=""
-for _ in $(seq 1 50); do
+for _ in $(seq 1 150); do
   PORT="$(sed -n 's/^LISTENING \([0-9]*\)$/\1/p' "$MOCK_LOG" 2>/dev/null | head -1)"
   [ -n "$PORT" ] && break
   if ! kill -0 "$MOCK_PID" 2>/dev/null; then

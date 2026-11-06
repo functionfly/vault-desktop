@@ -434,8 +434,14 @@ a manifest file exists.
 - **Plaintext never reaches a `Debug` format.** The type that carried a
   plaintext field was deleted, and the ciphertext envelope has a
   hand-written `Debug` that reports only the shape of the envelope — never
-  the ciphertext, nonce or salt, which are the entire offline attack
+  the ciphertext, nonce or salt, which is the entire offline attack
   surface.
+- **Dependency advisories are triaged, not dismissed.** GitHub's
+  dependency scanner reports against the crates the core is built on.
+  Every alert is either fixed or recorded with a written reason — which
+  advisory, which locked version, and why the code path is or is not
+  reachable — in
+  [`docs/SECURITY-REVIEW.md`](docs/SECURITY-REVIEW.md#dependency-advisories).
 
 See [`docs/SECURITY-REVIEW.md`](docs/SECURITY-REVIEW.md) for the full
 STRIDE review and the residual risks that are accepted for this release.
