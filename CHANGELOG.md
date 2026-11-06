@@ -77,10 +77,12 @@ project follows [Semantic Versioning](https://semver.org/).
   `glib::VariantStrIter`), is **accepted rather than fixed**: the fix
   was merged into the `gtk-rs-core` tree after the 0.18.x line was
   frozen, so there is no in-range upgrade to take. `glib` reaches this
-  project only through Tauri's GTK stack, which is Linux-only — the
-  Windows and macOS installers do not contain the crate at all, and the
-  vault core calls none of the affected API. The reasoning is written
-  up in
+  project only through Tauri's GTK stack, which Tauri gates behind
+  `cfg(any(target_os = "linux", …))` — so it is absent from the Windows
+  and macOS dependency graphs, but it **is** in the Linux graph and the
+  shipped AppImage and `.deb` contain it. The vault core calls none of
+  the affected API, and the GTK stack is not a path this application
+  exercises. The reasoning is written up in
   [`docs/SECURITY-REVIEW.md`](docs/SECURITY-REVIEW.md#dependency-advisories).
 
 ### Changed

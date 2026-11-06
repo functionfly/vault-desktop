@@ -1,6 +1,10 @@
 # STRIDE review — FunctionFly Vault Desktop v1.0.0
 
 **Reviewed:** 2026-11-04
+**Amended:** 2026-11-05 — added *Dependency advisories* (the `rustls`
+0.23.46 upgrade and the accepted `glib` advisory), and corrected the
+*Residual risks* row about branch protection, which had been written
+before the protection was enabled.
 **Scope:** the Tauri IPC surface (webview → Rust core), the capability
 manifest, the crypto module, the store, and the updater contract.
 **Reviewer:** engineering (pre-launch pass, release blocker for 1.0.0)
