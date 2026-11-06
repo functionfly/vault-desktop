@@ -5,66 +5,16 @@ project follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
-### Added
+## [1.0.2] — 2026-11-05
 
-- **A macOS compile gate.** `scripts/macos-typecheck.sh` type-checks the
-  `aarch64-apple-darwin` build on a Linux host, so a macOS-only compile
-  error is caught without waiting for a macOS runner. It cross-compiles
-  with `zig cc` (which bundles the macOS libc headers and emits Mach-O
-  objects) and LLVM's `llvm-install-name-tool` (which CMake requires for
-  a Darwin build). It is a **compile gate, not a build**: it produces no
-  `.app` and no `.dmg`, because that needs the Apple SDK, the Tauri macOS
-  bundler and an Apple Developer ID certificate. It runs as a job in the
-  portable CI runner and in `ci.yml`, and it skips itself with an
-  explicit notice on a host without zig — a silent skip that reads as
-  "ok" is the worst possible outcome.
-
-  The gate was verified to actually catch errors: a deliberate compile
-  error inside a `cfg(target_os = "macos")` block fails the gate, and
-  the gate passes again once the error is reverted.
-
-### Fixed
-
-- **The release self-tests could fail on a busy build host.** Both
-  `scripts/staging-smoke.test.sh` and
-  `scripts/release/publish-update.test.sh` start a Python mock and then
-  wait for it to come up — by polling its log for the `LISTENING` line,
-  and by polling a health check respectively. The budgets were 10
-  seconds and 2 seconds.
-
-  That is not enough when the host is busy. The mock has to be scheduled
-  before it can start importing, so a machine running a Rust release
-  build with LTO in parallel can leave it waiting well past two seconds.
-  The failure was also a misleading one: `staging-smoke.test.sh`
-  reported *"the mock never reported a port"* with an **empty** log,
-  which reads like a broken mock rather than a slow start. It failed the
-  portable CI run on 2026-11-05 that way, while the same script passed
-  when run on its own.
-
-  Both budgets are now 30 seconds. The waits stay bounded, and the
-  "the mock died on startup" branch still separates a crash from a slow
-  start.
-
-- **The README's status block was stale.** It reported `v1.0.0` when the
-  shipped release is `v1.0.1`, and claimed 125 Rust tests and 103
-  vitest where the real counts are 129 and 105. The published-artefact
-  contract suite was not mentioned at all.
-
-- **`client_construction_does_not_perform_user_io` was flaky.** It
-  asserted that `VaultClient::new()` returns in under 500 ms, but it was
-  measuring the *first* construction in the process — and that one pays a
-  one-time cost: `reqwest::Client::builder().build()` may touch DNS once
-  per process to resolve a platform root-certificate provider. On a host
-  with an unreachable resolver that is a DNS timeout (two nameservers at
-  five seconds each), so the test intermittently failed against a bound
-  that had nothing to do with the client's behaviour — it failed the
-  portable CI run on 2026-11-05 with 10.96 s. The measurement now
-  excludes the warm-up and covers the second construction, which is the
-  one a future blocking-call refactor would break.
+A dependency-security release. The v1.0.1 installers were built before the
+`rustls` upgrade and therefore still carry it, so this release exists to
+put the fixed dependency in front of users. There is no behaviour change:
+no feature, no fix to the application's own logic, no API change.
 
 ### Security
 
-- **rustls was upgraded from 0.23.45 to 0.23.46**, clearing four open
+- **`rustls` was upgraded from 0.23.45 to 0.23.46**, clearing four open
   advisories that GitHub's dependency scanner had flagged against the
   shipped binaries:
 
@@ -105,6 +55,46 @@ project follows [Semantic Versioning](https://semver.org/).
   exercises. The reasoning is written up in
   [`docs/SECURITY-REVIEW.md`](docs/SECURITY-REVIEW.md#dependency-advisories).
 
+### Fixed
+
+- **The release self-tests could fail on a busy build host.** Both
+  `scripts/staging-smoke.test.sh` and
+  `scripts/release/publish-update.test.sh` start a Python mock and then
+  wait for it to come up — by polling its log for the `LISTENING` line,
+  and by polling a health check respectively. The budgets were 10
+  seconds and 2 seconds.
+
+  That is not enough when the host is busy. The mock has to be scheduled
+  before it can start importing, so a machine running a Rust release
+  build with LTO in parallel can leave it waiting well past two seconds.
+  The failure was also a misleading one: `staging-smoke.test.sh`
+  reported *"the mock never reported a port"* with an **empty** log,
+  which reads like a broken mock rather than a slow start. It failed the
+  portable CI run on 2026-11-05 that way, while the same script passed
+  when run on its own.
+
+  Both budgets are now 30 seconds. The waits stay bounded, and the
+  "the mock died on startup" branch still separates a crash from a slow
+  start.
+
+### Added
+
+- **A macOS compile gate.** `scripts/macos-typecheck.sh` type-checks the
+  `aarch64-apple-darwin` build on a Linux host, so a macOS-only compile
+  error is caught without waiting for a macOS runner. It cross-compiles
+  with `zig cc` (which bundles the macOS libc headers and emits Mach-O
+  objects) and LLVM's `llvm-install-name-tool` (which CMake requires for
+  a Darwin build). It is a **compile gate, not a build**: it produces no
+  `.app` and no `.dmg`, because that needs the Apple SDK, the Tauri macOS
+  bundler and an Apple Developer ID certificate. It runs as a job in the
+  portable CI runner and in `ci.yml`, and it skips itself with an
+  explicit notice on a host without zig — a silent skip that reads as
+  "ok" is the worst possible outcome.
+
+  The gate was verified to actually catch errors: a deliberate compile
+  error inside a `cfg(target_os = "macos")` block fails the gate, and
+  the gate passes again once the error is reverted.
+
 ### Changed
 
 - **The GitHub Actions minutes are now spent where they earn their
@@ -123,6 +113,7 @@ project follows [Semantic Versioning](https://semver.org/).
   why (the release workflow's `macos-latest` job cannot start while the
   organisation's GitHub billing is unsettled), and that the Ed25519
   updater signature is not a platform vendor signature.
+
 
 ## [1.0.1] — 2026-11-04
 

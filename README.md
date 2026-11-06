@@ -4,9 +4,9 @@ Cross-platform desktop client for the FunctionFly zero-knowledge secrets API.
 Built on Tauri v2 (Rust core + React webview) and packed into a single binary
 for Windows, macOS, and Linux.
 
-> **Status: 2026-11-05 — v1.0.1 is released.**
+> **Status: 2026-11-05 — v1.0.2 is released.**
 > The installers are published at
-> [the v1.0.1 release](https://github.com/functionfly/vault-desktop/releases/tag/v1.0.1)
+> [the v1.0.2 release](https://github.com/functionfly/vault-desktop/releases/tag/v1.0.2)
 > (Windows `.exe` + `.msi`, Linux AppImage + `.deb`), each with the Ed25519
 > signature the updater verifies, and the `stable` updater channel serves six
 > signed platform keys from
