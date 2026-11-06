@@ -25,6 +25,26 @@ project follows [Semantic Versioning](https://semver.org/).
 
 ### Fixed
 
+- **The release self-tests could fail on a busy build host.** Both
+  `scripts/staging-smoke.test.sh` and
+  `scripts/release/publish-update.test.sh` start a Python mock and then
+  wait for it to come up — by polling its log for the `LISTENING` line,
+  and by polling a health check respectively. The budgets were 10
+  seconds and 2 seconds.
+
+  That is not enough when the host is busy. The mock has to be scheduled
+  before it can start importing, so a machine running a Rust release
+  build with LTO in parallel can leave it waiting well past two seconds.
+  The failure was also a misleading one: `staging-smoke.test.sh`
+  reported *"the mock never reported a port"* with an **empty** log,
+  which reads like a broken mock rather than a slow start. It failed the
+  portable CI run on 2026-11-05 that way, while the same script passed
+  when run on its own.
+
+  Both budgets are now 30 seconds. The waits stay bounded, and the
+  "the mock died on startup" branch still separates a crash from a slow
+  start.
+
 - **The README's status block was stale.** It reported `v1.0.0` when the
   shipped release is `v1.0.1`, and claimed 125 Rust tests and 103
   vitest where the real counts are 129 and 105. The published-artefact
